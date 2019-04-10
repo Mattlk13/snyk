@@ -40,7 +40,7 @@
     "es6-promise": "^3.0.2",
     "hasbin": "^1.2.3",
     "inquirer": "1.0.3",
-    "open": "^0.0.5",
+    "open": "^6.0.0",
     "os-name": "^1.0.3",
     "request": "^2.74.0",
     "semver": "^5.1.0",
