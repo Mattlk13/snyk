@@ -12,6 +12,7 @@ import {
   UnsupportedFeatureFlagError,
 } from './errors';
 import { MonitorOptions, Options, TestOptions } from './types';
+import { isMultiProjectScan } from './is-multi-project-scan';
 
 const featureFlag = 'reachableVulns';
 
@@ -36,12 +37,13 @@ export async function validatePayload(
 ): Promise<boolean> {
   if (
     packageManager &&
-    !options.allProjects &&
+    !isMultiProjectScan(options) &&
     !REACHABLE_VULNS_SUPPORTED_PACKAGE_MANAGERS.includes(packageManager)
   ) {
     throw new FeatureNotSupportedByPackageManagerError(
       'Reachable vulns',
       packageManager,
+      `For a list of supported package managers go to https://support.snyk.io/hc/en-us/articles/360010554837-Reachable-Vulnerabilities`,
     );
   }
   const reachableVulnsSupportedRes = await isFeatureFlagSupportedForOrg(

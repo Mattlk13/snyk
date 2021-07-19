@@ -7,11 +7,34 @@ interface ModeData {
 }
 
 const modes: Record<string, ModeData> = {
+  source: {
+    allowedCommands: ['test', 'monitor'],
+    config: (args): [] => {
+      args['source'] = true;
+      return args;
+    },
+  },
   container: {
     allowedCommands: ['test', 'monitor'],
     config: (args): [] => {
       args['docker'] = true;
       args['experimental'] = true;
+
+      return args;
+    },
+  },
+  iac: {
+    allowedCommands: ['test'],
+    config: (args): [] => {
+      args['iac'] = true;
+
+      return args;
+    },
+  },
+  code: {
+    allowedCommands: ['test'],
+    config: (args): [] => {
+      args['code'] = true;
 
       return args;
     },

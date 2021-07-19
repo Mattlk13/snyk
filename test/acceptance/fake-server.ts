@@ -55,7 +55,16 @@ export function fakeServer(root, apikey) {
   });
 
   server.use((req, res, next) => {
-    if (!server._nextResponse && !server._nextStatusCode) {
+    // these test don't run on the new experimental flow
+    // so once we deprecate legacy this check can be removed
+    const isExperimentalIac =
+      req.url !== undefined &&
+      (req.url.includes('/iac-org-settings') ||
+        req.url.includes('/feature-flags/experimentalLocalExecIac'));
+    if (
+      isExperimentalIac ||
+      (!server._nextResponse && !server._nextStatusCode)
+    ) {
       return next();
     }
     const response = server._nextResponse;
@@ -124,16 +133,159 @@ export function fakeServer(root, apikey) {
     return next();
   });
 
+  server.post(root + '/docker-jwt/test-dependencies', (req, res, next) => {
+    if (
+      req.headers.authorization &&
+      !req.headers.authorization.includes('Bearer')
+    ) {
+      res.send(401);
+    }
+
+    res.send({
+      result: {
+        issues: [],
+        issuesData: {},
+        depGraphData: {
+          schemaVersion: '1.2.0',
+          pkgManager: {
+            name: 'rpm',
+            repositories: [{ alias: 'rhel:8.2' }],
+          },
+          pkgs: [
+            {
+              id: 'docker-image|foo@1.2.3',
+              info: {
+                name: 'docker-image|foo',
+                version: '1.2.3',
+              },
+            },
+          ],
+          graph: {
+            rootNodeId: 'root-node',
+            nodes: [
+              {
+                nodeId: 'root-node',
+                pkgId: 'docker-image|foo@1.2.3',
+                deps: [],
+              },
+            ],
+          },
+        },
+      },
+      meta: {
+        org: 'test-org',
+        isPublic: false,
+      },
+    });
+    return next();
+  });
+
+  server.post(root + '/test-dependencies', (req, res, next) => {
+    if (req.query.org && req.query.org === 'missing-org') {
+      res.status(404);
+      res.send({
+        code: 404,
+        userMessage: 'cli error message',
+      });
+      return next();
+    }
+
+    res.send({
+      result: {
+        issues: [],
+        issuesData: {},
+        depGraphData: {
+          schemaVersion: '1.2.0',
+          pkgManager: {
+            name: 'rpm',
+            repositories: [{ alias: 'rhel:8.2' }],
+          },
+          pkgs: [
+            {
+              id: 'docker-image|foo@1.2.3',
+              info: {
+                name: 'docker-image|foo',
+                version: '1.2.3',
+              },
+            },
+          ],
+          graph: {
+            rootNodeId: 'root-node',
+            nodes: [
+              {
+                nodeId: 'root-node',
+                pkgId: 'docker-image|foo@1.2.3',
+                deps: [],
+              },
+            ],
+          },
+        },
+      },
+      meta: {
+        org: 'test-org',
+        isPublic: false,
+      },
+    });
+    return next();
+  });
+
+  server.put(root + '/monitor-dependencies', (req, res, next) => {
+    if (req.query.org && req.query.org === 'missing-org') {
+      res.status(404);
+      res.send({
+        code: 404,
+        userMessage: 'cli error message',
+      });
+      return next();
+    }
+
+    res.send({
+      ok: true,
+      org: 'test-org',
+      id: 'project-public-id',
+      isMonitored: true,
+      trialStarted: true,
+      licensesPolicy: {},
+      uri:
+        'http://example-url/project/project-public-id/history/snapshot-public-id',
+      projectName: 'test-project',
+    });
+    return next();
+  });
+
+  server.post(root + '/test-iac', (req, res, next) => {
+    if (req.query.org && req.query.org === 'missing-org') {
+      res.status(404);
+      res.send({
+        code: 404,
+        userMessage: 'cli error message',
+      });
+      return next();
+    }
+
+    res.send({
+      result: {
+        projectType: 'k8sconfig',
+        cloudConfigResults: [],
+      },
+      meta: {
+        org: 'test-org',
+        isPublic: false,
+      },
+    });
+    return next();
+  });
+
   server.get(
     root + '/cli-config/feature-flags/:featureFlag',
     (req, res, next) => {
+      const org = req.params.org;
       const flag = req.params.featureFlag;
-      if ((req as any).params.org === 'no-flag') {
+      const disabled = new Set(['optOutFromLocalExecIac']);
+      if (org === 'no-flag' || disabled.has(flag)) {
         res.send({
           ok: false,
-          userMessage: `Org ${
-            (req as any).org
-          } doesn\'t have \'${flag}\' feature enabled'`,
+          userMessage: `Org ${org} doesn't have '${flag}' feature enabled'`,
         });
         return next();
       }
@@ -143,6 +295,25 @@ export function fakeServer(root, apikey) {
       return next();
     },
   );
+
+  server.get(root + '/iac-org-settings', (req, res, next) => {
+    res.status(200);
+    res.send({
+      meta: {
+        isPrivate: false,
+        isLicensesEnabled: false,
+        ignoreSettings: null,
+        org: req.params.org || 'test-org',
+      },
+      customPolicies: {},
+    });
+    return next();
+  });
+
+  server.get(root + '/authorization/:action', (req, res, next) => {
+    res.send({ result: { allowed: true } });
+    return next();
+  });
 
   server.put(root + '/monitor/:registry/graph', (req, res, next) => {
     res.send({

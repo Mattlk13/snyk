@@ -1,5 +1,5 @@
 import { SupportedPackageManagers } from './package-managers';
-import { SupportedCloudConfigs } from './cloud-config-projects';
+import { IacProjectTypes, IacFileTypes } from './iac/constants';
 import { legacyCommon as legacyApi } from '@snyk/cli-interface';
 import { SEVERITY } from './snyk-test/legacy';
 import { FailOn } from './snyk-test/common';
@@ -13,24 +13,46 @@ export type DepTree = legacyApi.DepTree;
 export type ShowVulnPaths = 'none' | 'some' | 'all';
 
 export interface TestOptions {
-  traverseNodeModules: boolean;
-  interactive: boolean;
-  'prune-repeated-subdependencies'?: boolean;
+  traverseNodeModules?: boolean;
+  pruneRepeatedSubdependencies?: boolean;
   showVulnPaths: ShowVulnPaths;
   failOn?: FailOn;
   reachableVulns?: boolean;
-}
-export interface ProtectOptions {
-  loose: boolean;
+  reachableVulnsTimeout?: number;
+  initScript?: string;
+  yarnWorkspaces?: boolean;
+  gradleSubProject?: boolean;
+  command?: string; // python interpreter to use for python tests
+  testDepGraphDockerEndpoint?: string | null;
+  isDockerUser?: boolean;
+  /** @deprecated Only used by the legacy `iac test` flow remove once local exec path is GA */
+  iacDirFiles?: IacFileInDirectory[];
 }
 
-export interface WizardOptions {
+export interface ProtectOptions {
+  interactive?: boolean;
   newPolicy: boolean;
 }
+
+export interface Contributor {
+  userId: string;
+  lastCommitDate: string;
+}
+
+export interface PolicyOptions {
+  'ignore-policy'?: boolean; // used in snyk/policy lib
+  'trust-policies'?: boolean; // used in snyk/policy lib
+  'policy-path'?: string;
+  loose?: boolean;
+}
+
 export interface Options {
   org?: string | null;
   path: string;
   docker?: boolean;
+  iac?: boolean;
+  code?: boolean;
+  source?: boolean; // C/C++ Ecosystem Support
   file?: string;
   policy?: string;
   json?: boolean;
@@ -38,9 +60,6 @@ export interface Options {
   projectName?: string;
   insecure?: boolean;
   'dry-run'?: boolean;
-  'ignore-policy'?: boolean;
-  'trust-policies'?: boolean; // used in snyk/policy lib
-  'policy-path'?: boolean;
   allSubProjects?: boolean;
   'project-name'?: string;
   'show-vulnerable-paths'?: string;
@@ -55,8 +74,15 @@ export interface Options {
   allProjects?: boolean;
   detectionDepth?: number;
   exclude?: string;
-  // Used with the Docker plugin only. Allows requesting some experimental/unofficial features.
+  strictOutOfSync?: boolean;
+  // Used only with the IaC mode & Docker plugin. Allows requesting some experimental/unofficial features.
   experimental?: boolean;
+  // Used with the Docker plugin only. Allows application scanning.
+  'app-vulns'?: boolean;
+  debug?: boolean;
+  sarif?: boolean;
+  'group-issues'?: boolean;
+  quiet?: boolean;
 }
 
 // TODO(kyegupov): catch accessing ['undefined-properties'] via noImplicitAny
@@ -73,10 +99,15 @@ export interface MonitorOptions {
   scanAllUnmanaged?: boolean;
   allProjects?: boolean;
   // An experimental flag to allow monitoring of bigtrees (with degraded deps info and remediation advice).
-  'prune-repeated-subdependencies'?: boolean;
+  pruneRepeatedSubdependencies?: boolean;
   // Used with the Docker plugin only. Allows requesting some experimental/unofficial features.
   experimental?: boolean;
+  // Used with the Docker plugin only. Allows application scanning.
+  'app-vulns'?: boolean;
   reachableVulns?: boolean;
+  reachableVulnsTimeout?: number;
+  initScript?: string;
+  yarnWorkspaces?: boolean;
 }
 
 export interface MonitorMeta {
@@ -90,6 +121,12 @@ export interface MonitorMeta {
   'remote-repo-url'?: string;
 }
 
+export interface PackageJson {
+  scripts: any;
+  snyk: boolean;
+  dependencies: any;
+  devDependencies: any;
+}
 export interface MonitorResult {
   org?: string;
   id: string;
@@ -111,6 +148,67 @@ export interface SpinnerOptions {
   cleanup?: any;
 }
 
-export type SupportedProjectTypes =
-  | SupportedCloudConfigs
-  | SupportedPackageManagers;
+export interface OutputDataTypes {
+  stdout: any;
+  stringifiedData: string;
+  stringifiedJsonData: string;
+  stringifiedSarifData: string;
+}
+
+export type SupportedProjectTypes = IacProjectTypes | SupportedPackageManagers;
+
+// TODO: finish typing this there are many more!
+export type SupportedUserReachableFacingCliArgs =
+  | 'all-projects'
+  | 'all-sub-projects'
+  | 'detection-depth'
+  | 'docker'
+  | 'dry-run'
+  | 'fail-on'
+  | 'file'
+  | 'gradle-sub-project'
+  | 'ignore-policy'
+  | 'init-script'
+  | 'integration-name'
+  | 'integration-version'
+  | 'json'
+  | 'package-manager'
+  | 'packages-folder'
+  | 'policy'
+  | 'project-name'
+  | 'prune-repeated-subdependencies'
+  | 'reachable'
+  | 'reachable-timeout'
+  | 'reachable-vulns'
+  | 'reachable-vulns-timeout'
+  | 'rules'
+  | 'scan-all-unmanaged'
+  | 'severity-threshold'
+  | 'show-vulnerable-paths'
+  | 'skip-unresolved'
+  | 'strict-out-of-sync'
+  | 'sub-project'
+  | 'trust-policies'
+  | 'yarn-workspaces';
+
+export enum SupportedCliCommands {
+  version = 'version',
+  help = 'help',
+  // config = 'config', // TODO: cleanup `$ snyk config` parsing logic before adding it here
+  // auth = 'auth', // TODO: auth does not support argv._ at the moment
+  test = 'test',
+  monitor = 'monitor',
+  fix = 'fix',
+  protect = 'protect',
+  policy = 'policy',
+  ignore = 'ignore',
+  wizard = 'wizard',
+  woof = 'woof',
+}
+
+export interface IacFileInDirectory {
+  filePath: string;
+  fileType: IacFileTypes;
+  projectType?: IacProjectTypes;
+  failureReason?: string;
+}

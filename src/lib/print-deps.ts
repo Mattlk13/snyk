@@ -3,6 +3,7 @@ import * as depGraphLib from '@snyk/dep-graph';
 import { DepDict, Options, MonitorOptions } from './types';
 import { legacyCommon as legacyApi } from '@snyk/cli-interface';
 import { countPathsToGraphRoot } from './utils';
+import { jsonStringifyLargeObject } from './json';
 
 export async function maybePrintDepGraph(
   options: Options | MonitorOptions,
@@ -21,13 +22,13 @@ export async function maybePrintDepGraph(
   } else {
     if (options['print-deps']) {
       if (options.json) {
-        console.log(
+        console.warn(
           '--print-deps --json option not yet supported for large projects. Displaying graph json output instead',
         );
         // TODO @boost: add as output graphviz 'dot' file to visualize?
-        console.log(JSON.stringify(depGraph.toJSON(), null, 2));
+        console.log(jsonStringifyLargeObject(depGraph.toJSON()));
       } else {
-        console.log(
+        console.warn(
           '--print-deps option not yet supported for large projects. Try with --json.',
         );
       }
@@ -44,7 +45,7 @@ export function maybePrintDepTree(
   if (options['print-deps']) {
     if (options.json) {
       // Will produce 2 JSON outputs, one for the deps, one for the vuln scan.
-      console.log(JSON.stringify(rootPackage, null, 2));
+      console.log(jsonStringifyLargeObject(rootPackage));
     } else {
       printDepsForTree({ [rootPackage.name!]: rootPackage });
     }
@@ -62,7 +63,11 @@ function printDepsForTree(depDict: DepDict, prefix = '') {
       branch = '└─ ';
     }
     console.log(
-      prefix + (prefix ? branch : '') + dep.name + ' @ ' + dep.version,
+      prefix +
+        (prefix ? branch : '') +
+        dep.name +
+        ' @ ' +
+        (dep.version ? dep.version : ''),
     );
     if (dep.dependencies) {
       printDepsForTree(dep.dependencies, prefix + (last ? '   ' : '│  '));

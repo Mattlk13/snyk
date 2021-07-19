@@ -1,6 +1,7 @@
-import * as _ from '@snyk/lodash';
+const values = require('lodash.values');
 import * as depGraphLib from '@snyk/dep-graph';
 import { SupportedPackageManagers } from '../package-managers';
+import { SupportedProjectTypes } from '../types';
 import { SEVERITIES } from './common';
 
 interface Pkg {
@@ -19,12 +20,13 @@ export enum SEVERITY {
   LOW = 'low',
   MEDIUM = 'medium',
   HIGH = 'high',
+  CRITICAL = 'critical',
 }
 
 export enum REACHABILITY {
   FUNCTION = 'function',
   PACKAGE = 'package',
-  UNREACHABLE = 'unreachable',
+  NOT_REACHABLE = 'not-reachable',
   NO_INFO = 'no-info',
 }
 
@@ -49,6 +51,7 @@ export interface GroupedVuln {
   title: string;
   note: string | false;
   severity: SEVERITY;
+  originalSeverity?: SEVERITY;
   isNew: boolean;
   name: string;
   version: string;
@@ -83,10 +86,23 @@ export interface IssueData {
   fixedIn: string[];
   legalInstructions?: string;
   reachability?: REACHABILITY;
+  packageManager?: SupportedProjectTypes;
+}
+
+export type CallPath = string[];
+
+export interface ReachableFunctionPaths {
+  functionName: string;
+  callPaths: CallPath[];
+}
+
+export interface ReachablePaths {
+  pathCount: number;
+  paths: ReachableFunctionPaths[];
 }
 
 interface AnnotatedIssue extends IssueData {
-  credit: any;
+  credit: string[];
   name: string;
   version: string;
   from: string[];
@@ -94,6 +110,7 @@ interface AnnotatedIssue extends IssueData {
   isUpgradable: boolean;
   isPatchable: boolean;
   severity: SEVERITY;
+  originalSeverity?: SEVERITY;
 
   // These fields present for "node_module" based scans to allow remediation
   bundled?: any;
@@ -106,6 +123,11 @@ interface AnnotatedIssue extends IssueData {
   patch?: any;
   note?: string | false;
   publicationTime?: string;
+
+  reachablePaths?: ReachablePaths;
+  identifiers?: {
+    [name: string]: string[];
+  };
 }
 
 // Mixin, to be added to GroupedVuln / AnnotatedIssue
@@ -121,24 +143,29 @@ export interface IgnoreSettings {
   disregardFilesystemIgnores: boolean;
 }
 
-export interface LegacyVulnApiResult {
-  vulnerabilities: AnnotatedIssue[];
+export interface BasicResultData {
   ok: boolean;
-  dependencyCount: number;
+  payloadType?: string;
   org: string;
-  policy: string;
   isPrivate: boolean;
-  licensesPolicy: object | null;
-  packageManager: string;
-  ignoreSettings: IgnoreSettings | null;
   summary: string;
+  packageManager?: SupportedProjectTypes;
+  severityThreshold?: string;
+  platform?: string;
+}
+
+export interface LegacyVulnApiResult extends BasicResultData {
+  vulnerabilities: AnnotatedIssue[];
+  dependencyCount: number;
+  policy: string;
+  licensesPolicy: object | null;
+  ignoreSettings: IgnoreSettings | null;
   docker?: {
     baseImage?: any;
     binariesVulns?: unknown;
     baseImageRemediation?: BaseImageRemediation;
   };
-  severityThreshold?: string;
-
+  projectId?: string;
   filesystemPolicy?: boolean;
   uniqueCount?: any;
   remediation?: RemediationChanges;
@@ -159,6 +186,7 @@ export interface BaseImageRemediationAdvice {
 export interface TestResult extends LegacyVulnApiResult {
   targetFile?: string;
   projectName?: string;
+  targetFilePath?: string;
   displayTargetFile?: string; // used for display only
   foundProjectCount?: number;
 }
@@ -180,21 +208,20 @@ interface FixInfo {
   nearestFixedInVersion?: string;
 }
 
+export interface AffectedPackages {
+  [pkgId: string]: {
+    pkg: Pkg;
+    issues: {
+      [issueId: string]: Issue;
+    };
+  };
+}
+
 interface TestDepGraphResult {
   issuesData: {
     [issueId: string]: IssueData;
   };
-  affectedPkgs: {
-    [pkgId: string]: {
-      pkg: Pkg;
-      issues: {
-        [issueId: string]: {
-          issueId: string;
-          fixInfo: FixInfo;
-        };
-      };
-    };
-  };
+  affectedPkgs: AffectedPackages;
   docker: {
     binariesVulns?: TestDepGraphResult;
     baseImage?: any;
@@ -202,7 +229,28 @@ interface TestDepGraphResult {
   remediation?: RemediationChanges;
 }
 
-interface TestDepGraphMeta {
+interface Issue {
+  pkgName: string;
+  pkgVersion?: string;
+  issueId: string;
+  fixInfo: FixInfo;
+}
+
+export interface TestDependenciesResult {
+  issuesData: {
+    [issueId: string]: IssueData;
+  };
+  issues: Issue[];
+  docker?: {
+    baseImage: string;
+    baseImageRemediation: BaseImageRemediation;
+    binariesVulns: TestDepGraphResult;
+  };
+  remediation?: RemediationChanges;
+  depGraphData: depGraphLib.DepGraphData;
+}
+
+export interface TestDepGraphMeta {
   isPublic: boolean;
   isLicensesEnabled: boolean;
   licensesPolicy?: {
@@ -210,6 +258,7 @@ interface TestDepGraphMeta {
       [type: string]: string;
     };
   };
+  projectId?: string;
   ignoreSettings?: IgnoreSettings;
   policy: string;
   org: string;
@@ -217,6 +266,11 @@ interface TestDepGraphMeta {
 
 export interface TestDepGraphResponse {
   result: TestDepGraphResult;
+  meta: TestDepGraphMeta;
+}
+
+export interface TestDependenciesResponse {
+  result: TestDependenciesResult;
   meta: TestDepGraphMeta;
 }
 
@@ -279,15 +333,15 @@ export interface RemediationChanges {
 function convertTestDepGraphResultToLegacy(
   res: TestDepGraphResponse,
   depGraph: depGraphLib.DepGraph,
-  packageManager: string,
+  packageManager: SupportedProjectTypes | undefined,
   severityThreshold?: SEVERITY,
 ): LegacyVulnApiResult {
   const result = res.result;
 
   const upgradePathsMap = new Map<string, string[]>();
 
-  for (const pkgInfo of _.values(result.affectedPkgs)) {
-    for (const pkgIssue of _.values(pkgInfo.issues)) {
+  for (const pkgInfo of values(result.affectedPkgs)) {
+    for (const pkgIssue of values(pkgInfo.issues)) {
       if (pkgIssue.fixInfo && pkgIssue.fixInfo.upgradePaths) {
         for (const upgradePath of pkgIssue.fixInfo.upgradePaths) {
           const legacyFromPath = pkgPathToLegacyPath(upgradePath.path);
@@ -307,10 +361,10 @@ function convertTestDepGraphResultToLegacy(
   //   use the upgradePathsMap to find available upgrade-paths
   const vulns: AnnotatedIssue[] = [];
 
-  for (const pkgInfo of _.values(result.affectedPkgs)) {
+  for (const pkgInfo of values(result.affectedPkgs)) {
     for (const vulnPkgPath of depGraph.pkgPathsToRoot(pkgInfo.pkg)) {
       const legacyFromPath = pkgPathToLegacyPath(vulnPkgPath.reverse());
-      for (const pkgIssue of _.values(pkgInfo.issues)) {
+      for (const pkgIssue of values(pkgInfo.issues)) {
         const vulnPathString = getVulnPathString(
           pkgIssue.issueId,
           legacyFromPath,
@@ -343,8 +397,8 @@ function convertTestDepGraphResultToLegacy(
 
   if (dockerRes && dockerRes.binariesVulns) {
     const binariesVulns = dockerRes.binariesVulns;
-    for (const pkgInfo of _.values(binariesVulns.affectedPkgs)) {
-      for (const pkgIssue of _.values(pkgInfo.issues)) {
+    for (const pkgInfo of values(binariesVulns.affectedPkgs)) {
+      for (const pkgIssue of values(pkgInfo.issues)) {
         const pkgAndVersion = (pkgInfo.pkg.name +
           '@' +
           pkgInfo.pkg.version) as string;
@@ -380,6 +434,7 @@ function convertTestDepGraphResultToLegacy(
     isPrivate: !meta.isPublic,
     licensesPolicy: meta.licensesPolicy || null,
     packageManager,
+    projectId: meta.projectId,
     ignoreSettings: meta.ignoreSettings || null,
     docker: result.docker,
     summary: getSummary(vulns, severityThreshold),

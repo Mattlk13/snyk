@@ -1,11 +1,9 @@
 import * as debugModule from 'debug';
 const debug = debugModule('snyk');
-import * as protect from '../src/lib/protect';
+const protect = require('../src/lib/protect');
 import * as path from 'path';
 import { test } from 'tap';
-// tslint:disable-next-line: no-var-requires
 const vulns = require('./fixtures/hoek@4.2.0-vuln.json').vulnerabilities;
-// tslint:disable-next-line: no-var-requires
 const unpatchableVulns = require('./fixtures/hoek@4.2.0-nopatch.json')
   .vulnerabilities;
 import { exec } from 'child_process';

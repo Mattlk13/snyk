@@ -8,7 +8,9 @@ Issues to fix by upgrading dependencies:
 
   Upgrade flask to 1.0 to fix
   ✗ Improper Input Validation [High Severity][http://localhost:12345/vuln/SNYK-PYTHON-FLASK-42185] in flask@0.12.2
+    introduced by flask@0.12.2
   ✗ Denial of Service (DOS) [High Severity][http://localhost:12345/vuln/SNYK-PYTHON-FLASK-451637] in flask@0.12.2
+    introduced by flask@0.12.2
 
   Pin Jinja2 to 2.10.1 to fix
   ✗ Sandbox Escape [Medium Severity][http://localhost:12345/vuln/SNYK-PYTHON-JINJA2-174126] in Jinja2@2.9.6
@@ -26,3 +28,6 @@ Target file:       requirements.txt
 Project name:      pip-app-transitive-vuln
 Open source:       no
 Project path:      pip-app-transitive-vuln
+
+Tip: Try `snyk fix` to address these issues.`snyk fix` is a new CLI command in that aims to automatically apply the recommended updates for supported ecosystems.
+See documentation on how to enable this beta feature: https://support.snyk.io/hc/en-us/articles/4403417279505-Automatic-remediation-with-snyk-fix

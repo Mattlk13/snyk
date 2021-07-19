@@ -1,6 +1,8 @@
 import * as sinon from 'sinon';
-import * as _ from '@snyk/lodash';
+const get = require('lodash.get');
+const isObject = require('lodash.isobject');
 import * as path from 'path';
+import * as depGraphLib from '@snyk/dep-graph';
 
 interface AcceptanceTests {
   language: string;
@@ -12,6 +14,37 @@ interface AcceptanceTests {
 export const AllProjectsTests: AcceptanceTests = {
   language: 'Mixed',
   tests: {
+    '`monitor mono-repo-with-ignores --all-projects` respects .snyk policy': (
+      params,
+      utils,
+    ) => async (t) => {
+      utils.chdirWorkspaces();
+      await params.cli.monitor('mono-repo-with-ignores', {
+        allProjects: true,
+        detectionDepth: 2,
+      });
+      // Pop all calls to server and filter out calls to `featureFlag` endpoint
+      const requests = params.server
+        .popRequests(4)
+        .filter((req) => req.url.includes('/monitor/'));
+      let policyCount = 0;
+      requests.forEach((req) => {
+        const vulnerableFolderPath =
+          process.platform === 'win32'
+            ? 'vulnerable\\package-lock.json'
+            : 'vulnerable/package-lock.json';
+
+        if (req.body.targetFileRelativePath.endsWith(vulnerableFolderPath)) {
+          t.match(
+            req.body.policy,
+            'npm:node-uuid:20160328',
+            'body contains policy',
+          );
+          policyCount += 1;
+        }
+      });
+      t.equal(policyCount, 1, 'one policy found');
+    },
     '`monitor mono-repo-project --all-projects --detection-depth=1`': (
       params,
       utils,
@@ -45,6 +78,7 @@ export const AllProjectsTests: AcceptanceTests = {
       t.ok(loadPlugin.withArgs('nuget').calledOnce, 'calls nuget plugin');
       t.ok(loadPlugin.withArgs('paket').calledOnce, 'calls nuget plugin');
       t.ok(loadPlugin.withArgs('pip').calledOnce, 'calls pip plugin');
+      t.ok(loadPlugin.withArgs('sbt').calledOnce, 'calls sbt plugin');
 
       t.match(
         result,
@@ -56,23 +90,25 @@ export const AllProjectsTests: AcceptanceTests = {
       t.match(result, 'nuget/some/project-id', 'nuget project in output');
       t.match(result, 'paket/some/project-id', 'paket project in output');
       t.match(result, 'pip/some/project-id', 'python project in output ');
+      t.match(result, 'sbt/graph/some/project-id', 'sbt project in output ');
 
       // Pop all calls to server and filter out calls to `featureFlag` endpoint
       const requests = params.server
-        .popRequests(7)
+        .popRequests(9)
         .filter((req) => req.url.includes('/monitor/'));
-      t.equal(requests.length, 6, 'correct amount of monitor requests');
+      t.equal(requests.length, 7, 'correct amount of monitor requests');
 
       const pluginsWithoutTargetFileInBody = [
         'snyk-nodejs-lockfile-parser',
         'bundled:maven',
         'bundled:rubygems',
+        'snyk:sbt',
       ];
 
       requests.forEach((req) => {
         t.match(
           req.url,
-          /\/api\/v1\/monitor\/(npm\/graph|rubygems|maven|nuget|paket|pip)/,
+          /\/api\/v1\/monitor\/(npm\/graph|rubygems|maven|nuget|paket|pip|sbt)/,
           'puts at correct url',
         );
         if (pluginsWithoutTargetFileInBody.includes(req.body.meta.pluginName)) {
@@ -137,10 +173,14 @@ export const AllProjectsTests: AcceptanceTests = {
       utils.chdirWorkspaces();
       const spyPlugin = sinon.spy(params.plugins, 'loadPlugin');
       t.teardown(spyPlugin.restore);
-
-      const result = await params.cli.monitor('monorepo-bad-project', {
-        allProjects: true,
-      });
+      let result;
+      try {
+        await params.cli.monitor('monorepo-bad-project', {
+          allProjects: true,
+        });
+      } catch (error) {
+        result = error.message;
+      }
       t.ok(spyPlugin.withArgs('rubygems').calledOnce, 'calls rubygems plugin');
       t.ok(spyPlugin.withArgs('yarn').calledOnce, 'calls npm plugin');
       t.ok(spyPlugin.withArgs('maven').notCalled, 'did not call  maven plugin');
@@ -150,11 +190,10 @@ export const AllProjectsTests: AcceptanceTests = {
         'rubygems/graph/some/project-id',
         'rubygems project was monitored',
       );
-
-      t.notMatch(
+      t.match(
         result,
-        'yarn/graph/some/project-id',
-        'yarn project was not monitored',
+        'Dependency snyk was not found in yarn.lock',
+        'yarn project had an error and we displayed it',
       );
 
       const request = params.server.popRequest();
@@ -213,7 +252,7 @@ export const AllProjectsTests: AcceptanceTests = {
 
       // Pop all calls to server and filter out calls to `featureFlag` endpoint
       const requests = params.server
-        .popRequests(7)
+        .popRequests(9)
         .filter((req) => req.url.includes('/monitor/'));
       // find each type of request
       const rubyAll = requests.find((req) => req.url.indexOf('rubygems') > -1);
@@ -222,6 +261,7 @@ export const AllProjectsTests: AcceptanceTests = {
       const nugetAll = requests.find((req) => req.url.indexOf('nuget') > -1);
       const paketAll = requests.find((req) => req.url.indexOf('paket') > -1);
       const mavenAll = requests.find((req) => req.url.indexOf('maven') > -1);
+      const sbtAll = requests.find((req) => req.url.indexOf('sbt') > -1);
 
       await params.cli.monitor('mono-repo-project', {
         file: 'Gemfile.lock',
@@ -255,6 +295,11 @@ export const AllProjectsTests: AcceptanceTests = {
         file: 'pom.xml',
       });
       const mavenFile = params.server.popRequest();
+
+      await params.cli.monitor('mono-repo-project', {
+        file: 'build.sbt',
+      });
+      const sbtFile = params.server.popRequest();
 
       t.same(
         rubyAll.body,
@@ -290,6 +335,12 @@ export const AllProjectsTests: AcceptanceTests = {
         mavenAll.body,
         mavenFile.body,
         'same body for --all-projects and --file=pom.xml',
+      );
+
+      t.same(
+        sbtAll.body,
+        sbtFile.body,
+        'same body for --all-projects and --file=build.sbt',
       );
     },
     '`monitor composer-app with --all-projects sends same payload as --file`': (
@@ -348,15 +399,15 @@ export const AllProjectsTests: AcceptanceTests = {
           detectionDepth: 1,
         });
 
-        const requests = params.server.popRequests(7);
-        const ffRequests = params.server.popRequests(3);
+        const requests = params.server.popRequests(9);
+        const ffRequests = params.server.popRequests(4);
 
         t.equal(
           ffRequests.every((req) => req.url.includes('experimentalDepGraph')),
           true,
           'all left requests are feature flag requests',
         );
-        t.equal(requests.length, 7, 'sends expected # requests'); // extra feature-flags request
+        t.equal(requests.length, 9, 'sends expected # requests'); // extra feature-flags request
         t.equal(
           params.server._reqLog.length,
           0,
@@ -366,12 +417,12 @@ export const AllProjectsTests: AcceptanceTests = {
         const jsonResponse = JSON.parse(response);
         t.equal(
           jsonResponse.length,
-          6,
+          7,
           'json response array has expected # elements',
         );
 
         jsonResponse.forEach((res) => {
-          if (_.isObject(res)) {
+          if (isObject(res)) {
             t.pass('monitor outputted JSON');
           } else {
             t.fail('Failed parsing monitor JSON output');
@@ -386,7 +437,7 @@ export const AllProjectsTests: AcceptanceTests = {
           ];
 
           keyList.forEach((k) => {
-            !_.get(res, k) ? t.fail(k + ' not found') : t.pass(k + ' found');
+            !get(res, k) ? t.fail(k + ' not found') : t.pass(k + ' found');
           });
         });
       } catch (error) {
@@ -686,6 +737,242 @@ export const AllProjectsTests: AcceptanceTests = {
         t.equal(req.method, 'PUT', 'makes PUT request');
         t.equal(
           req.headers['x-snyk-cli-version'],
+          params.versionNumber,
+          'sends version number',
+        );
+      });
+    },
+    '`monitor gradle-monorepo with --all-projects`': (params, utils) => async (
+      t,
+    ) => {
+      utils.chdirWorkspaces();
+      const simpleGradleGraph = depGraphLib.createFromJSON({
+        schemaVersion: '1.2.0',
+        pkgManager: {
+          name: 'gradle',
+        },
+        pkgs: [
+          {
+            id: 'gradle-monorepo@0.0.0',
+            info: {
+              name: 'gradle-monorepo',
+              version: '0.0.0',
+            },
+          },
+        ],
+        graph: {
+          rootNodeId: 'root-node',
+          nodes: [
+            {
+              nodeId: 'root-node',
+              pkgId: 'gradle-monorepo@0.0.0',
+              deps: [],
+            },
+          ],
+        },
+      });
+      const plugin = {
+        async inspect() {
+          return {
+            plugin: {
+              name: 'bundled:gradle',
+              runtime: 'unknown',
+              meta: {},
+            },
+            scannedProjects: [
+              {
+                meta: {
+                  gradleProjectName: 'root-proj',
+                  versionBuildInfo: {
+                    gradleVersion: '6.5',
+                  },
+                },
+                depGraph: simpleGradleGraph,
+              },
+              {
+                meta: {
+                  gradleProjectName: 'root-proj/subproj',
+                  versionBuildInfo: {
+                    gradleVersion: '6.5',
+                  },
+                },
+                depGraph: simpleGradleGraph,
+              },
+            ],
+          };
+        },
+      };
+      const loadPlugin = sinon.stub(params.plugins, 'loadPlugin');
+      t.teardown(loadPlugin.restore);
+      loadPlugin.withArgs('gradle').returns(plugin);
+      loadPlugin.callThrough();
+      const result = await params.cli.monitor('gradle-monorepo', {
+        allProjects: true,
+        detectionDepth: 3,
+        d: true,
+      });
+      t.match(
+        result,
+        'gradle/graph/some/project-id',
+        'gradle project was monitored',
+      );
+      t.match(
+        result,
+        'npm/graph/some/project-id',
+        'gradle project was monitored',
+      );
+
+      // Pop one extra call to server and filter out call to `featureFlag` endpoint
+      const requests = params.server
+        .popRequests(4)
+        .filter((req) => req.url.includes('/monitor/'));
+      t.equal(requests.length, 3, 'correct amount of monitor requests');
+      requests.forEach((req) => {
+        t.match(
+          req.url,
+          /\/api\/v1\/monitor\/(npm\/graph|gradle\/graph)/,
+          'puts at correct url',
+        );
+        t.notOk(req.body.targetFile, "doesn't send the targetFile");
+        t.equal(req.method, 'PUT', 'makes PUT request');
+        t.equal(
+          req.headers['x-snyk-cli-version'],
+          params.versionNumber,
+          'sends version number',
+        );
+      });
+    },
+    '`monitor kotlin-monorepo --all-projects` scans kotlin files': (
+      params,
+      utils,
+    ) => async (t) => {
+      utils.chdirWorkspaces();
+      const simpleGradleGraph = depGraphLib.createFromJSON({
+        schemaVersion: '1.2.0',
+        pkgManager: {
+          name: 'gradle',
+        },
+        pkgs: [
+          {
+            id: 'gradle-monorepo@0.0.0',
+            info: {
+              name: 'gradle-monorepo',
+              version: '0.0.0',
+            },
+          },
+        ],
+        graph: {
+          rootNodeId: 'root-node',
+          nodes: [
+            {
+              nodeId: 'root-node',
+              pkgId: 'gradle-monorepo@0.0.0',
+              deps: [],
+            },
+          ],
+        },
+      });
+      const plugin = {
+        async inspect() {
+          return {
+            plugin: {
+              name: 'bundled:gradle',
+              runtime: 'unknown',
+              meta: {},
+            },
+            scannedProjects: [
+              {
+                meta: {
+                  gradleProjectName: 'root-proj',
+                  versionBuildInfo: {
+                    gradleVersion: '6.5',
+                  },
+                },
+                depGraph: simpleGradleGraph,
+              },
+              {
+                meta: {
+                  gradleProjectName: 'root-proj/subproj',
+                  versionBuildInfo: {
+                    gradleVersion: '6.5',
+                  },
+                },
+                depGraph: simpleGradleGraph,
+              },
+            ],
+          };
+        },
+      };
+      const loadPlugin = sinon.stub(params.plugins, 'loadPlugin');
+      t.teardown(loadPlugin.restore);
+      loadPlugin.withArgs('gradle').returns(plugin);
+      loadPlugin.callThrough();
+
+      const result = await params.cli.monitor('kotlin-monorepo', {
+        allProjects: true,
+        detectionDepth: 3,
+      });
+      t.ok(loadPlugin.withArgs('rubygems').calledOnce, 'calls rubygems plugin');
+      t.ok(loadPlugin.withArgs('gradle').calledOnce, 'calls gradle plugin');
+
+      t.match(
+        result,
+        'gradle/graph/some/project-id',
+        'gradle project was monitored',
+      );
+      t.match(
+        result,
+        'rubygems/graph/some/project-id',
+        'rubygems project was monitored',
+      );
+      // Pop one extra call to server and filter out call to `featureFlag` endpoint
+      const requests = params.server
+        .popRequests(4)
+        .filter((req) => req.url.includes('/monitor/'));
+      t.equal(requests.length, 3, 'correct amount of monitor requests');
+      requests.forEach((req) => {
+        t.match(
+          req.url,
+          /\/api\/v1\/monitor\/(rubygems\/graph|gradle\/graph)/,
+          'puts at correct url',
+        );
+        t.notOk(req.body.targetFile, "doesn't send the targetFile");
+        t.equal(req.method, 'PUT', 'makes PUT request');
+        t.equal(
+          req.headers['x-snyk-cli-version'],
+          params.versionNumber,
+          'sends version number',
+        );
+      });
+    },
+    '`monitor mono-repo-poetry with --all-projects --detection-depth=2`': (
+      params,
+      utils,
+    ) => async (t) => {
+      utils.chdirWorkspaces();
+      const result = await params.cli.monitor('mono-repo-poetry', {
+        allProjects: true,
+        detectionDepth: 2,
+      });
+      t.match(
+        result,
+        'npm/graph/some/project-id',
+        'npm project was monitored ',
+      );
+      t.match(
+        result,
+        'poetry/graph/some/project-id',
+        'poetry project was monitored ',
+      );
+      const requests = params.server.popRequests(2);
+      requests.forEach((request) => {
+        const urlOk =
+          request.url === '/api/v1/monitor/npm' ||
+          '/api/v1/monitor/poetry/graph';
+        t.ok(urlOk, 'puts at correct url');
+        t.equal(request.method, 'PUT', 'makes PUT request');
+        t.equal(
+          request.headers['x-snyk-cli-version'],
           params.versionNumber,
           'sends version number',
         );

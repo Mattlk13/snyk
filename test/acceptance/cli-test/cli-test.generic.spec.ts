@@ -2,6 +2,8 @@ import * as sinon from 'sinon';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as needle from 'needle';
+import * as Ajv from 'ajv';
+import sarifSchema = require('../../support/sarif-schema-2.1.0');
 import { AcceptanceTests } from './cli-test.acceptance.test';
 
 // ensure this is required *after* the demo server, since this will
@@ -32,7 +34,25 @@ export const GenericTests: AcceptanceTests = {
       t.end();
     },
 
-    'userMessage correctly bubbles with npm': (params, utils) => async (t) => {
+    '`test ` test missing container image': (params, utils) => async (t) => {
+      utils.chdirWorkspaces();
+      try {
+        await params.cli.test({ docker: true });
+        t.fail('should have failed');
+      } catch (err) {
+        t.match(
+          err.message,
+          'Could not detect an image. Specify an image name to scan and try running the command again.',
+          'show err message',
+        );
+        t.pass('throws err');
+      }
+    },
+
+    'userMessage and error code correctly bubbles with npm': (
+      params,
+      utils,
+    ) => async (t) => {
       utils.chdirWorkspaces();
       try {
         await params.cli.test('npm-package', { org: 'missing-org' });
@@ -40,9 +60,32 @@ export const GenericTests: AcceptanceTests = {
       } catch (err) {
         t.equal(
           err.userMessage,
-          "We couldn't test npm-package. Please check the version and package name and try running `snyk test` again.\nFor additional assistance, run `snyk help` or check out our docs \n(link to: https://support.snyk.io/hc/en-us/articles/360003851277#UUID-ba99a73f-110d-1f1d-9e7a-1bad66bf0996).",
+          "Couldn't find the requested package",
           'got correct err message',
         );
+        t.equal(err.code, 404);
+      }
+      t.end();
+    },
+
+    'userMessage and error code correctly bubbles with npm and json output': (
+      params,
+      utils,
+    ) => async (t) => {
+      utils.chdirWorkspaces();
+      try {
+        await params.cli.test('npm-package', {
+          org: 'missing-org',
+          json: true,
+        });
+        t.fail('expect to err');
+      } catch (err) {
+        t.has(
+          err.jsonStringifiedResults,
+          "Couldn't find the requested package",
+          'got correct err message',
+        );
+        t.equal(err.code, 404);
       }
       t.end();
     },
@@ -58,7 +101,7 @@ export const GenericTests: AcceptanceTests = {
       } catch (err) {
         t.equal(
           err.userMessage,
-          "We couldn't test ruby-app. Please check the version and package name and try running `snyk test` again.\nFor additional assistance, run `snyk help` or check out our docs \n(link to: https://support.snyk.io/hc/en-us/articles/360003851277#UUID-ba99a73f-110d-1f1d-9e7a-1bad66bf0996).",
+          "Couldn't find the requested package",
           'got correct err message',
         );
       }
@@ -354,6 +397,28 @@ export const GenericTests: AcceptanceTests = {
         t.fail('should have thrown');
       } catch (err) {
         t.match(err.message, 'Internal server error');
+      }
+    },
+
+    'test --sarif': (params, utils) => async (t) => {
+      utils.chdirWorkspaces();
+      try {
+        const vulns = require('../fixtures/npm-package/test-graph-result.json');
+        params.server.setNextResponse(vulns);
+
+        await params.cli.test('npm-package', { sarif: true });
+        t.fail('Should fail');
+      } catch (err) {
+        const sarifObj = JSON.parse(err.message);
+        const validate = new Ajv({ allErrors: true }).compile(sarifSchema);
+        const valid = validate(sarifObj);
+        if (!valid) {
+          t.fail(
+            validate.errors
+              ?.map((e) => `${e.message} - ${JSON.stringify(e.params)}`)
+              .join(),
+          );
+        }
       }
     },
   },

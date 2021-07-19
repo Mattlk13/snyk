@@ -14,6 +14,7 @@
 <p align="center">
   <a href="https://snyk.io/test/github/snyk/snyk"><img src="https://snyk.io/test/github/snyk/snyk/badge.svg" alt="Known Vulnerabilities"/></a>
   <a href="https://snyk.io/features/"><img src="https://badgen.net/npm/dm/snyk" alt="Monthly Downloads"/></a>
+  <a href="https://snyk.io/advisor/npm-package/snyk"><img src="https://snyk.io/advisor/npm-package/snyk/badge.svg" alt="Snyk CLI on the Snyk Advisor></a>
 </p>
 
 ---
@@ -49,7 +50,7 @@ snyk [options] [command] [package]
 
 Run `snyk --help` to get a quick overview of all commands or for full details on the CLI read the snyk.io [CLI docs](https://snyk.io/docs/using-snyk?utm_campaign=docs&utm_medium=github&utm_source=cli).
 
-The package argument is optional. If no package is given, Snyk will run the command against the current working directory allowing you test you non-public applications.
+The package argument is optional. If no package is given, Snyk will run the command against the current working directory allowing you to test your non-public applications.
 
 ## Features
 
@@ -149,7 +150,8 @@ You may also need to mount the local `.m2` and `.ivy2` folders.
 
 Here are examples of running `snyk test` and `snyk monitor` in the image (with the latest version of Snyk) for SBT:
 
-*Note*: the `dependency-tree` or `sbt-dependency-graph` or `sbt-coursier` (included by default in latest sbt versions) module is required for `snyk` to process Scala projects.
+_Note_: the `dependency-tree` or `sbt-dependency-graph` or `sbt-coursier` (included by default in latest sbt versions) module is required for `snyk` to process Scala projects.
+
 ```
 docker run -it
     -e "SNYK_TOKEN=<TOKEN>"
@@ -239,7 +241,8 @@ The host project folder will be mounted to `/project` on the container and will 
 
 Here's an example of running `snyk test` and `snyk monitor` in the image (with the latest version of Snyk) for Maven:
 
-- *setup.py*
+- _setup.py_
+
 ```
 docker run -it
     -e "SNYK_TOKEN=<TOKEN>"
@@ -250,7 +253,8 @@ docker run -it
   snyk/snyk-cli:python-3 test --org=my-org-name
 ```
 
-- *Pipfile*
+- _Pipfile_
+
 ```
 docker run -it
     -e "SNYK_TOKEN=<TOKEN>"
@@ -261,7 +265,7 @@ docker run -it
   snyk/snyk-cli:python-3 test --org=my-org-name
 ```
 
-- *requirements.txt*
+- _requirements.txt_
 
 ```
 docker run -it

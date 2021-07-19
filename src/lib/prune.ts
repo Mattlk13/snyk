@@ -23,17 +23,26 @@ export async function pruneGraph(
   debug('rootPkg', depGraph.rootPkg);
   debug('prePrunePathsCount: ' + prePrunePathsCount);
   debug('isDenseGraph', isDenseGraph);
-  analytics.add('prePrunePathsCount', prePrunePathsCount);
+  analytics.add('prePrunedPathsCount', prePrunePathsCount);
   if (isDenseGraph || pruneIsRequired) {
+    debug('Trying to prune the graph');
+    const pruneStartTime = Date.now();
     const prunedTree = (await graphToDepTree(depGraph, packageManager, {
       deduplicateWithinTopLevelDeps: true,
     })) as DepTree;
+    const graphToTreeEndTime = Date.now();
+    analytics.add(
+      'prune.graphToTreeDuration',
+      graphToTreeEndTime - pruneStartTime,
+    );
     const prunedGraph = await depTreeToGraph(prunedTree, packageManager);
+    analytics.add('prune.treeToGraphDuration', Date.now() - graphToTreeEndTime);
     const postPrunePathsCount = countPathsToGraphRoot(prunedGraph);
-    analytics.add('postPrunePathsCount', postPrunePathsCount);
+    analytics.add('postPrunedPathsCount', postPrunePathsCount);
     debug('postPrunePathsCount' + postPrunePathsCount);
     if (postPrunePathsCount > config.MAX_PATH_COUNT) {
-      debug('Too many vulnerable paths to process the project');
+      debug('Too many paths to process the project');
+      //TODO replace the throw below with TooManyPaths we do not calculate vuln paths there
       throw new TooManyVulnPaths();
     }
     return prunedGraph;

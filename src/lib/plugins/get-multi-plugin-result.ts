@@ -1,4 +1,4 @@
-import * as _ from '@snyk/lodash';
+const cloneDeep = require('lodash.clonedeep');
 import * as path from 'path';
 import * as cliInterface from '@snyk/cli-interface';
 import chalk from 'chalk';
@@ -12,6 +12,7 @@ import { convertSingleResultToMultiCustom } from './convert-single-splugin-res-t
 import { convertMultiResultToMultiCustom } from './convert-multi-plugin-res-to-multi-custom';
 import { PluginMetadata } from '@snyk/cli-interface/legacy/plugin';
 import { CallGraph } from '@snyk/cli-interface/legacy/common';
+import { FailedToRunTestError } from '../errors';
 
 const debug = debugModule('snyk-test');
 export interface ScannedProjectCustom
@@ -20,9 +21,16 @@ export interface ScannedProjectCustom
   plugin: PluginMetadata;
   callGraph?: CallGraph;
 }
+
+interface FailedProjectScanError {
+  targetFile?: string;
+  error?: Error;
+  errMessage: string;
+}
 export interface MultiProjectResultCustom
   extends cliInterface.legacyPlugin.MultiProjectResult {
   scannedProjects: ScannedProjectCustom[];
+  failedResults?: FailedProjectScanError[];
 }
 
 export async function getMultiPluginResult(
@@ -31,8 +39,10 @@ export async function getMultiPluginResult(
   targetFiles: string[],
 ): Promise<MultiProjectResultCustom> {
   const allResults: ScannedProjectCustom[] = [];
+  const failedResults: FailedProjectScanError[] = [];
+
   for (const targetFile of targetFiles) {
-    const optionsClone = _.cloneDeep(options);
+    const optionsClone = cloneDeep(options);
     optionsClone.file = path.relative(root, targetFile);
     optionsClone.packageManager = detectPackageManagerFromFile(
       path.basename(targetFile),
@@ -68,8 +78,24 @@ export async function getMultiPluginResult(
 
       allResults.push(...pluginResultWithCustomScannedProjects.scannedProjects);
     } catch (err) {
-      debug(chalk.bold.red(err.message));
+      // TODO: propagate this all the way back and include in --json output
+      failedResults.push({
+        targetFile,
+        error: err,
+        errMessage: err.message || 'Something went wrong getting dependencies',
+      });
+      debug(
+        chalk.bold.red(
+          `\n✗ Failed to get dependencies for ${targetFile}\nERROR: ${err.message}\n`,
+        ),
+      );
     }
+  }
+
+  if (!allResults.length) {
+    throw new FailedToRunTestError(
+      `Failed to get dependencies for all ${targetFiles.length} potential projects. Run with \`-d\` for debug output and contact support@snyk.io`,
+    );
   }
 
   return {
@@ -77,5 +103,6 @@ export async function getMultiPluginResult(
       name: 'custom-auto-detect',
     },
     scannedProjects: allResults,
+    failedResults,
   };
 }

@@ -1,14 +1,14 @@
-var tap = require('tap');
-var test = tap.test;
-var url = require('url');
-var http = require('http');
-var nock = require('nock');
-var request = require('../src/lib/request');
+const tap = require('tap');
+const test = tap.test;
+const url = require('url');
+const http = require('http');
+const nock = require('nock');
+const request = require('../src/lib/request');
 
-var proxyPort = 4242;
-var httpRequestHost = 'http://localhost:8000';
-var httpsRequestHost = 'https://snyk.io:443';
-var requestPath = '/api/v1/verify/token';
+const proxyPort = 4242;
+const httpRequestHost = 'http://localhost:8000';
+const httpsRequestHost = 'https://snyk.io:443';
+const requestPath = '/api/v1/verify/token';
 
 /**
  * Verify support for http(s) proxy from environments variables
@@ -19,7 +19,7 @@ test('request respects proxy environment variables', function(t) {
   t.plan(6);
 
   t.test('direct http access', function(t) {
-    var nockClient = nock(httpRequestHost)
+    const nockClient = nock(httpRequestHost)
       .post(requestPath)
       .reply(200, {});
     return request({ method: 'post', url: httpRequestHost + requestPath })
@@ -31,7 +31,7 @@ test('request respects proxy environment variables', function(t) {
   });
 
   t.test('direct https access', function(t) {
-    var nockClient = nock(httpsRequestHost)
+    const nockClient = nock(httpsRequestHost)
       .post(requestPath)
       .reply(200, {});
     return request({ method: 'post', url: httpsRequestHost + requestPath })
@@ -51,10 +51,13 @@ test('request respects proxy environment variables', function(t) {
     t.teardown(() => {
       process.env.NO_PROXY = tmpNoProxy;
       delete process.env.http_proxy;
+      delete process.env.HTTP_PROXY;
+      delete global.GLOBAL_AGENT;
     });
 
+    // eslint-disable-next-line @typescript-eslint/camelcase
     process.env.http_proxy = `http://localhost:${proxyPort}`;
-    var proxy = http.createServer(function(req, res) {
+    const proxy = http.createServer(function(req, res) {
       t.equal(req.url, httpRequestHost + requestPath, 'http_proxy url ok');
       res.end();
     });
@@ -63,6 +66,7 @@ test('request respects proxy environment variables', function(t) {
     return request({ method: 'post', url: httpRequestHost + requestPath })
       .catch((err) => t.fail(err.message))
       .then(() => {
+        t.equal(process.env.http_proxy, process.env.HTTP_PROXY);
         proxy.close();
       });
   });
@@ -76,10 +80,11 @@ test('request respects proxy environment variables', function(t) {
     t.teardown(() => {
       process.env.NO_PROXY = tmpNoProxy;
       delete process.env.HTTP_PROXY;
+      delete global.GLOBAL_AGENT;
     });
 
     process.env.HTTP_PROXY = `http://localhost:${proxyPort}`;
-    var proxy = http.createServer(function(req, res) {
+    const proxy = http.createServer(function(req, res) {
       t.equal(req.url, httpRequestHost + requestPath, 'HTTP_PROXY url ok');
       res.end();
     });
@@ -93,10 +98,22 @@ test('request respects proxy environment variables', function(t) {
   });
 
   t.test('https_proxy', function(t) {
+    // NO_PROXY is set in CircleCI and brakes test purpose
+    const tmpNoProxy = process.env.NO_PROXY;
+    delete process.env.NO_PROXY;
+
+    t.teardown(() => {
+      process.env.NO_PROXY = tmpNoProxy;
+      delete process.env.https_proxy;
+      delete process.env.HTTPS_PROXY;
+      delete global.GLOBAL_AGENT;
+    });
+
+    // eslint-disable-next-line @typescript-eslint/camelcase
     process.env.https_proxy = `http://localhost:${proxyPort}`;
-    var proxy = http.createServer();
+    const proxy = http.createServer();
     proxy.setTimeout(1000);
-    proxy.on('connect', (req, cltSocket, head) => {
+    proxy.on('connect', (req, cltSocket) => {
       const proxiedUrl = url.parse(`https://${req.url}`);
       t.equal(
         proxiedUrl.hostname,
@@ -123,16 +140,26 @@ test('request respects proxy environment variables', function(t) {
     return request({ method: 'post', url: httpsRequestHost + requestPath })
       .catch(() => {}) // client socket being closed generates an error here
       .then(() => {
+        t.equal(process.env.https_proxy, process.env.HTTPS_PROXY);
         proxy.close();
-        delete process.env.https_proxy;
       });
   });
 
   t.test('HTTPS_PROXY', function(t) {
+    // NO_PROXY is set in CircleCI and brakes test purpose
+    const tmpNoProxy = process.env.NO_PROXY;
+    delete process.env.NO_PROXY;
+
+    t.teardown(() => {
+      process.env.NO_PROXY = tmpNoProxy;
+      delete process.env.HTTPS_PROXY;
+      delete global.GLOBAL_AGENT;
+    });
+
     process.env.HTTPS_PROXY = `http://localhost:${proxyPort}`;
-    var proxy = http.createServer();
+    const proxy = http.createServer();
     proxy.setTimeout(1000);
-    proxy.on('connect', (req, cltSocket, head) => {
+    proxy.on('connect', (req, cltSocket) => {
       const proxiedUrl = url.parse(`https://${req.url}`);
       t.equal(
         proxiedUrl.hostname,
@@ -160,7 +187,6 @@ test('request respects proxy environment variables', function(t) {
       .catch(() => {}) // client socket being closed generates an error here
       .then(() => {
         proxy.close();
-        delete process.env.HTTPS_PROXY;
       });
   });
 });

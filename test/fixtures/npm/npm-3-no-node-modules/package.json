@@ -1,5 +1,5 @@
 {
-  "name": "qs",
+  "name": "custom-name-package",
   "version": "0.6.6",
   "description": "",
   "main": "index.js",
@@ -10,5 +10,6 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "debug": "3.6.7"
   }
 }

@@ -1,19 +1,283 @@
-import { AcceptanceTests } from './cli-test.acceptance.test';
-import { getWorkspaceJSON } from '../workspace-helper';
 import * as path from 'path';
 import * as sinon from 'sinon';
+import * as depGraphLib from '@snyk/dep-graph';
 import { CommandResult } from '../../../src/cli/commands/types';
+import { AcceptanceTests } from './cli-test.acceptance.test';
+import { getWorkspaceJSON } from '../workspace-helper';
+
+const simpleGradleGraph = depGraphLib.createFromJSON({
+  schemaVersion: '1.2.0',
+  pkgManager: {
+    name: 'gradle',
+  },
+  pkgs: [
+    {
+      id: 'gradle-monorepo@0.0.0',
+      info: {
+        name: 'gradle-monorepo',
+        version: '0.0.0',
+      },
+    },
+  ],
+  graph: {
+    rootNodeId: 'root-node',
+    nodes: [
+      {
+        nodeId: 'root-node',
+        pkgId: 'gradle-monorepo@0.0.0',
+        deps: [],
+      },
+    ],
+  },
+});
 
 export const AllProjectsTests: AcceptanceTests = {
   language: 'Mixed',
   tests: {
+    '`test gradle-with-orphaned-build-file --all-projects` warns user': (
+      params,
+      utils,
+    ) => async (t) => {
+      utils.chdirWorkspaces();
+      const plugin = {
+        async inspect() {
+          return {
+            plugin: {
+              name: 'bundled:gradle',
+              runtime: 'unknown',
+              meta: {},
+            },
+            scannedProjects: [
+              {
+                meta: {
+                  gradleProjectName: 'root-proj',
+                  versionBuildInfo: {
+                    gradleVersion: '6.5',
+                  },
+                  targetFile: 'build.gradle',
+                },
+                depGraph: simpleGradleGraph,
+              },
+              {
+                meta: {
+                  gradleProjectName: 'root-proj/subproj',
+                  versionBuildInfo: {
+                    gradleVersion: '6.5',
+                  },
+                  targetFile: 'subproj/build.gradle',
+                },
+                depGraph: simpleGradleGraph,
+              },
+            ],
+          };
+        },
+      };
+      const loadPlugin = sinon.stub(params.plugins, 'loadPlugin');
+      t.teardown(loadPlugin.restore);
+      loadPlugin.withArgs('gradle').returns(plugin);
+      loadPlugin.callThrough();
+      // read data from console.log
+      let stdoutMessages = '';
+      const stubConsoleLog = (msg: string) => (stdoutMessages += msg);
+      const stubbedConsole = sinon
+        .stub(console, 'warn')
+        .callsFake(stubConsoleLog);
+      const result: CommandResult = await params.cli.test(
+        'gradle-with-orphaned-build-file',
+        {
+          allProjects: true,
+          detectionDepth: 3,
+        },
+      );
+      t.same(
+        stdoutMessages,
+        '✗ 1/3 detected Gradle manifests did not return dependencies. ' +
+          'They may have errored or were not included as part of a multi-project build. You may need to scan them individually with --file=path/to/file. Run with `-d` for more info.',
+      );
+      stubbedConsole.restore();
+      t.ok(stubbedConsole.calledOnce);
+      t.ok(loadPlugin.withArgs('gradle').calledOnce, 'calls gradle plugin');
+
+      t.match(
+        result.getDisplayResults(),
+        'Tested 2 projects',
+        'Detected 2 projects',
+      );
+    },
+    '`test kotlin-monorepo --all-projects` scans kotlin files': (
+      params,
+      utils,
+    ) => async (t) => {
+      utils.chdirWorkspaces();
+      const plugin = {
+        async inspect() {
+          return {
+            plugin: {
+              name: 'bundled:gradle',
+              runtime: 'unknown',
+              meta: {},
+            },
+            scannedProjects: [
+              {
+                meta: {
+                  gradleProjectName: 'root-proj',
+                  versionBuildInfo: {
+                    gradleVersion: '6.5',
+                  },
+                },
+                depGraph: simpleGradleGraph,
+              },
+              {
+                meta: {
+                  gradleProjectName: 'root-proj/subproj',
+                  versionBuildInfo: {
+                    gradleVersion: '6.5',
+                  },
+                },
+                depGraph: simpleGradleGraph,
+              },
+            ],
+          };
+        },
+      };
+      const loadPlugin = sinon.stub(params.plugins, 'loadPlugin');
+      t.teardown(loadPlugin.restore);
+      loadPlugin.withArgs('gradle').returns(plugin);
+      loadPlugin.callThrough();
+
+      const result: CommandResult = await params.cli.test('kotlin-monorepo', {
+        allProjects: true,
+        detectionDepth: 3,
+      });
+      t.ok(loadPlugin.withArgs('rubygems').calledOnce, 'calls rubygems plugin');
+      t.ok(loadPlugin.withArgs('gradle').calledOnce, 'calls gradle plugin');
+
+      params.server.popRequests(2).forEach((req) => {
+        t.equal(req.method, 'POST', 'makes POST request');
+        t.equal(
+          req.headers['x-snyk-cli-version'],
+          params.versionNumber,
+          'sends version number',
+        );
+        t.match(req.url, '/api/v1/test-dep-graph', 'posts to correct url');
+        t.ok(req.body.depGraph, 'body contains depGraph');
+        t.match(
+          req.body.depGraph.pkgManager.name,
+          /(gradle|rubygems)/,
+          'depGraph has package manager',
+        );
+      });
+      t.match(
+        result.getDisplayResults(),
+        'Tested 3 projects',
+        'Detected 3 projects',
+      );
+      t.match(
+        result.getDisplayResults(),
+        'Package manager:   rubygems',
+        'contains package manager rubygems',
+      );
+      t.match(
+        result.getDisplayResults(),
+        'Package manager:   gradle',
+        'contains package manager gradle',
+      );
+      t.match(
+        result.getDisplayResults(),
+        'Target file:       Gemfile.lock',
+        'contains target file Gemfile.lock',
+      );
+      t.match(
+        result.getDisplayResults(),
+        'Target file:       build.gradle.kts',
+        'contains target file build.gradle.kts',
+      );
+    },
+    '`test yarn-out-of-sync` out of sync fails': (params, utils) => async (
+      t,
+    ) => {
+      utils.chdirWorkspaces();
+      try {
+        await params.cli.test('yarn-workspace-out-of-sync', {
+          allProjects: true,
+        });
+        t.fail('Should fail');
+      } catch (e) {
+        t.equal(
+          e.message,
+          '\nTesting yarn-workspace-out-of-sync...\n\nFailed to get dependencies for all 3 potential projects. Run with `-d` for debug output and contact support@snyk.io',
+          'Contains enough info about err',
+        );
+      }
+    },
+    '`test mono-repo-with-ignores --all-projects` respects .snyk policy': (
+      params,
+      utils,
+    ) => async (t) => {
+      utils.chdirWorkspaces();
+      const loadPlugin = sinon.spy(params.plugins, 'loadPlugin');
+      t.teardown(loadPlugin.restore);
+
+      const result: CommandResult = await params.cli.test(
+        'mono-repo-with-ignores',
+        {
+          allProjects: true,
+          detectionDepth: 3,
+        },
+      );
+      t.ok(loadPlugin.withArgs('npm').calledTwice, 'calls npm plugin');
+      let policyCount = 0;
+      params.server.popRequests(2).forEach((req) => {
+        t.equal(req.method, 'POST', 'makes POST request');
+        t.equal(
+          req.headers['x-snyk-cli-version'],
+          params.versionNumber,
+          'sends version number',
+        );
+        t.match(req.url, '/api/v1/test-dep-graph', 'posts to correct url');
+        t.ok(req.body.depGraph, 'body contains depGraph');
+        const vulnerableFolderPath =
+          process.platform === 'win32'
+            ? 'vulnerable\\package-lock.json'
+            : 'vulnerable/package-lock.json';
+        if (req.body.targetFileRelativePath.endsWith(vulnerableFolderPath)) {
+          t.match(
+            req.body.policy,
+            'npm:node-uuid:20160328',
+            'body contains policy',
+          );
+          policyCount += 1;
+        }
+        t.match(
+          req.body.depGraph.pkgManager.name,
+          /(npm)/,
+          'depGraph has package manager',
+        );
+      });
+
+      t.match(policyCount, 1, 'one policy should have been found');
+      // results should contain test results from both package managers
+      // and show only 1/2 vulnerable paths for nested one since we ignore
+      // it in the .snyk file
+
+      t.match(
+        result.getDisplayResults(),
+        'Package manager:   npm',
+        'contains package manager npm',
+      );
+      t.match(
+        result.getDisplayResults(),
+        'Target file:       package-lock.json',
+        'contains target file package-lock.json',
+      );
+    },
     '`test mono-repo-project with lockfiles --all-projects`': (
       params,
       utils,
     ) => async (t) => {
       utils.chdirWorkspaces();
 
-      // mock python plugin becuase CI tooling doesn't have pipenv installed
+      // mock python plugin because CI tooling doesn't have pipenv installed
       const mockPlugin = {
         async inspect() {
           return {
@@ -41,8 +305,9 @@ export const AllProjectsTests: AcceptanceTests = {
       t.ok(loadPlugin.withArgs('nuget').calledOnce, 'calls nuget plugin');
       t.ok(loadPlugin.withArgs('paket').calledOnce, 'calls nuget plugin');
       t.ok(loadPlugin.withArgs('pip').calledOnce, 'calls pip plugin');
+      t.ok(loadPlugin.withArgs('sbt').calledOnce, 'calls pip plugin');
 
-      params.server.popRequests(6).forEach((req) => {
+      params.server.popRequests(7).forEach((req) => {
         t.equal(req.method, 'POST', 'makes POST request');
         t.equal(
           req.headers['x-snyk-cli-version'],
@@ -53,7 +318,7 @@ export const AllProjectsTests: AcceptanceTests = {
         t.ok(req.body.depGraph, 'body contains depGraph');
         t.match(
           req.body.depGraph.pkgManager.name,
-          /(npm|rubygems|maven|nuget|paket|pip)/,
+          /(npm|rubygems|maven|nuget|paket|pip|sbt)/,
           'depGraph has package manager',
         );
       });
@@ -98,6 +363,11 @@ export const AllProjectsTests: AcceptanceTests = {
         result.getDisplayResults(),
         'Target file:       Pipfile',
         'contains target file Pipfile',
+      );
+      t.match(
+        result.getDisplayResults(),
+        'Target file:       build.sbt',
+        'contains target file build.sbt',
       );
     },
 
@@ -158,9 +428,10 @@ export const AllProjectsTests: AcceptanceTests = {
       t.ok(loadPlugin.withArgs('maven').calledOnce, 'calls maven plugin');
       t.ok(loadPlugin.withArgs('nuget').calledOnce, 'calls nuget plugin');
       t.ok(loadPlugin.withArgs('paket').calledOnce, 'calls nuget plugin');
+      t.ok(loadPlugin.withArgs('sbt').calledOnce, 'calls sbt plugin');
       t.equals(loadPlugin.withArgs('pip').callCount, 2, 'calls pip plugin');
 
-      params.server.popRequests(9).forEach((req) => {
+      params.server.popRequests(10).forEach((req) => {
         t.equal(req.method, 'POST', 'makes POST request');
         t.equal(
           req.headers['x-snyk-cli-version'],
@@ -171,7 +442,7 @@ export const AllProjectsTests: AcceptanceTests = {
         t.ok(req.body.depGraph, 'body contains depGraph');
         t.match(
           req.body.depGraph.pkgManager.name,
-          /(npm|rubygems|maven|nuget|paket|pip)/,
+          /(npm|rubygems|maven|nuget|paket|pip|sbt)/,
           'depGraph has package manager',
         );
       });
@@ -272,6 +543,13 @@ export const AllProjectsTests: AcceptanceTests = {
         `Target file:       python-app-with-req-file${path.sep}requirements.txt`,
         `contains target file python-app-with-req-file${path.sep}requirements.txt`,
       );
+
+      // sbt
+      t.match(
+        result.getDisplayResults(),
+        'Target file:       build.sbt',
+        'contains target file build.sbt',
+      );
     },
 
     '`test mono-repo-project --all-projects and --file payloads are the same`': (
@@ -302,7 +580,7 @@ export const AllProjectsTests: AcceptanceTests = {
         detectionDepth: 1,
       });
 
-      const requests = params.server.popRequests(6);
+      const requests = params.server.popRequests(7);
 
       // find each type of request
       const rubyAll = requests.find(
@@ -322,6 +600,9 @@ export const AllProjectsTests: AcceptanceTests = {
       );
       const mavenAll = requests.find(
         (req) => req.body.depGraph.pkgManager.name === 'maven',
+      );
+      const sbtAll = requests.find(
+        (req) => req.body.depGraph.pkgManager.name === 'sbt',
       );
 
       await params.cli.test('mono-repo-project', {
@@ -353,6 +634,11 @@ export const AllProjectsTests: AcceptanceTests = {
         file: 'pom.xml',
       });
       const mavenFile = params.server.popRequest();
+
+      await params.cli.test('mono-repo-project', {
+        file: 'build.sbt',
+      });
+      const sbtFile = params.server.popRequest();
 
       t.same(
         pipAll.body,
@@ -387,6 +673,12 @@ export const AllProjectsTests: AcceptanceTests = {
         mavenAll.body,
         mavenFile.body,
         'Same body for --all-projects and --file=pom.xml',
+      );
+
+      t.same(
+        sbtAll.body,
+        sbtFile.body,
+        'Same body for --all-projects and --file=build.sbt',
       );
     },
 
@@ -441,34 +733,6 @@ export const AllProjectsTests: AcceptanceTests = {
       );
     },
 
-    '`test large-mono-repo with --all-projects and --detection-depth=2`': (
-      params,
-      utils,
-    ) => async (t) => {
-      utils.chdirWorkspaces();
-      const spyPlugin = sinon.spy(params.plugins, 'loadPlugin');
-      t.teardown(spyPlugin.restore);
-      await params.cli.test('large-mono-repo', {
-        allProjects: true,
-        detectionDepth: 2,
-      });
-      t.equals(
-        spyPlugin.withArgs('rubygems').callCount,
-        1,
-        'calls rubygems plugin once',
-      );
-      t.equals(
-        spyPlugin.withArgs('npm').callCount,
-        19,
-        'calls npm plugin 19 times',
-      );
-      t.equals(
-        spyPlugin.withArgs('maven').callCount,
-        1,
-        'calls maven plugin once',
-      );
-    },
-
     '`test large-mono-repo with --all-projects and --detection-depth=7`': (
       params,
       utils,
@@ -489,6 +753,16 @@ export const AllProjectsTests: AcceptanceTests = {
         spyPlugin.withArgs('npm').callCount,
         19,
         'calls npm plugin 19 times',
+      );
+      t.equals(
+        spyPlugin.withArgs('gradle').callCount,
+        2,
+        'calls gradle plugin 2 times',
+      );
+      t.equals(
+        spyPlugin.withArgs('gradle').args[0][1].allSubProjects,
+        true,
+        'calls gradle plugin with allSubProjects property',
       );
       t.equals(
         spyPlugin.withArgs('maven').callCount,
@@ -635,6 +909,11 @@ export const AllProjectsTests: AcceptanceTests = {
         spyPlugin.withArgs('npm').callCount,
         19,
         'calls npm plugin 19 times',
+      );
+      t.equals(
+        spyPlugin.withArgs('gradle').callCount,
+        2,
+        'calls gradle plugin 2 times',
       );
       t.equals(
         spyPlugin.withArgs('maven').callCount,

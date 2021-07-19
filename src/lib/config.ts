@@ -15,6 +15,7 @@ interface Config {
   timeout: number;
   PROJECT_NAME: string;
   TOKEN: string;
+  CODE_CLIENT_PROXY_URL: string;
 }
 
 // TODO: fix the types!
@@ -30,7 +31,7 @@ if (endpoint && endpoint !== config.API) {
   if (!parsedEndpoint || !parsedEndpoint.protocol || !parsedEndpoint.host) {
     throw new InvalidEndpointConfigError();
   }
-  console.info(
+  console.warn(
     'Using a custom API endpoint from `snyk config` (tip: it should contain path to `/api`):',
     endpoint,
   );
@@ -52,7 +53,7 @@ if (!config.org && org) {
 // invalid (non-numeric) value will fallback to the default
 const timeout = userConfig.get('timeout');
 if (!config.timeout) {
-  config.timeout = +timeout ? +timeout : DEFAULT_TIMEOUT;
+  config.timeout = timeout && +timeout ? +timeout : DEFAULT_TIMEOUT;
 }
 
 // this is a bit of an assumption that our web site origin is the same

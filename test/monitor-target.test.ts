@@ -1,14 +1,13 @@
-import { test, afterEach, afterAll } from 'tap';
+import { test } from 'tap';
 import * as requestLib from 'needle';
 import * as path from 'path';
 
-import * as _ from '@snyk/lodash';
+const isEmpty = require('lodash.isempty');
 import * as sinon from 'sinon';
 
 import * as cli from '../src/cli/commands';
 import subProcess = require('../src/lib/sub-process');
 import { fakeServer } from './acceptance/fake-server';
-import { getVersion } from '../src/lib/version';
 
 const apiKey = '123456789';
 
@@ -19,11 +18,9 @@ process.env.SNYK_HOST = 'http://localhost:' + port;
 process.env.LOG_LEVEL = '0';
 let oldkey;
 let oldendpoint;
-let versionNumber;
 const server = fakeServer(BASE_API, apiKey);
 
 test('setup', async (t) => {
-  versionNumber = await getVersion();
   let key = await cli.config('get', 'api');
   oldkey = key;
   t.pass('existing user config captured');
@@ -52,9 +49,9 @@ test('Make sure that target is sent correctly', async (t) => {
 
   const { data } = await getFakeServerRequestBody();
   t.true(requestSpy.calledTwice, 'needle.request was called once');
-  t.true(!_.isEmpty(data.target), 'target passed to request');
+  t.true(!isEmpty(data.target), 'target passed to request');
   t.true(
-    !_.isEmpty(data.targetFileRelativePath),
+    !isEmpty(data.targetFileRelativePath),
     'targetFileRelativePath passed to request',
   );
   t.equals(data.target.branch, 'master', 'correct branch passed to request');
@@ -79,7 +76,7 @@ test("Make sure it's not failing monitor for non git projects", async (t) => {
   const { data } = await getFakeServerRequestBody();
 
   t.true(requestSpy.calledTwice, 'needle.request was called once');
-  t.true(_.isEmpty(data.target), 'empty target passed to request');
+  t.true(isEmpty(data.target), 'empty target passed to request');
   t.match(
     data.targetFileRelativePath,
     'snyk' + path.sep + 'package.json',
@@ -96,7 +93,7 @@ test("Make sure it's not failing if there is no remote configured", async (t) =>
   const { data } = await getFakeServerRequestBody();
 
   t.true(requestSpy.calledTwice, 'needle.request was called once');
-  t.true(_.isEmpty(data.target), 'empty target passed to request');
+  t.true(isEmpty(data.target), 'empty target passed to request');
   t.match(
     data.targetFileRelativePath,
     'snyk' + path.sep + 'package.json',
@@ -114,7 +111,7 @@ test('teardown', async (t) => {
   delete process.env.SNYK_PORT;
   t.notOk(process.env.SNYK_PORT, 'fake env values cleared');
 
-  await new Promise((resolve) => {
+  await new Promise<void>((resolve) => {
     server.close(resolve);
   });
   t.pass('server shutdown');

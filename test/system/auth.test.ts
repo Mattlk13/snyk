@@ -1,4 +1,3 @@
-import * as _ from '@snyk/lodash';
 import { test } from 'tap';
 import * as sinon from 'sinon';
 import * as isAuthed from '../../src/cli/commands/auth/is-authed';
@@ -12,7 +11,6 @@ process.env.SNYK_API = 'http://localhost:' + port + BASE_API;
 process.env.SNYK_HOST = 'http://localhost:' + port;
 process.env.LOG_LEVEL = '0';
 
-// tslint:disable-next-line:no-var-requires
 const server = require('../cli-server')(BASE_API, apiKey, notAuthorizedApiKey);
 
 // ensure this is required *after* the demo server, since this will

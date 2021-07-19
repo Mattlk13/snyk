@@ -1,26 +1,33 @@
 import * as fs from 'fs';
-import * as _ from '@snyk/lodash';
+const get = require('lodash.get');
 import * as path from 'path';
-import * as debugModule from 'debug';
 import * as pathUtil from 'path';
+import * as debugModule from 'debug';
+import chalk from 'chalk';
 import { parsePackageString as moduleToObject } from 'snyk-module';
 import * as depGraphLib from '@snyk/dep-graph';
+import { IacScan } from './payload-schema';
+import * as Queue from 'promise-queue';
 
 import {
-  TestResult,
-  DockerIssue,
+  AffectedPackages,
   AnnotatedIssue,
-  LegacyVulnApiResult,
-  TestDepGraphResponse,
   convertTestDepGraphResultToLegacy,
+  DockerIssue,
+  LegacyVulnApiResult,
+  TestDependenciesResponse,
+  TestDepGraphResponse,
+  TestResult,
 } from './legacy';
+import { IacTestResponse } from './iac-test-result';
 import {
   AuthFailedError,
-  InternalServerError,
-  NoSupportedManifestsFoundError,
+  DockerImageNotFoundError,
   FailedToGetVulnerabilitiesError,
   FailedToGetVulnsFromUnavailableResource,
   FailedToRunTestError,
+  InternalServerError,
+  NoSupportedManifestsFoundError,
   UnsupportedFeatureFlagError,
 } from '../errors';
 import * as snyk from '../';
@@ -28,116 +35,302 @@ import { isCI } from '../is-ci';
 import * as common from './common';
 import * as config from '../config';
 import * as analytics from '../analytics';
-import { pluckPolicies } from '../policy';
-import { maybePrintDepTree, maybePrintDepGraph } from '../print-deps';
-import { GitTarget, ContainerTarget } from '../project-metadata/types';
+import { maybePrintDepGraph, maybePrintDepTree } from '../print-deps';
+import { ContainerTarget, GitTarget } from '../project-metadata/types';
 import * as projectMetadata from '../project-metadata';
-import { DepTree, Options, TestOptions, SupportedProjectTypes } from '../types';
+import {
+  DepTree,
+  Options,
+  PolicyOptions,
+  SupportedProjectTypes,
+  TestOptions,
+} from '../types';
 import { pruneGraph } from '../prune';
 import { getDepsFromPlugin } from '../plugins/get-deps-from-plugin';
-import { ScannedProjectCustom } from '../plugins/get-multi-plugin-result';
-
-import request = require('../request');
-import spinner = require('../spinner');
+import {
+  MultiProjectResultCustom,
+  ScannedProjectCustom,
+} from '../plugins/get-multi-plugin-result';
 import { extractPackageManager } from '../plugins/extract-package-manager';
-import { getSubProjectCount } from '../plugins/get-sub-project-count';
+import { getExtraProjectCount } from '../plugins/get-extra-project-count';
 import { serializeCallGraphWithMetrics } from '../reachable-vulns';
 import { validateOptions } from '../options-validator';
-import { countPathsToGraphRoot } from '../utils';
+import { findAndLoadPolicy } from '../policy';
+import { assembleIacLocalPayloads, parseIacTestResult } from './run-iac-test';
+import {
+  Payload,
+  PayloadBody,
+  DepTreeFromResolveDeps,
+  TestDependenciesRequest,
+} from './types';
+import { CallGraphError, CallGraph } from '@snyk/cli-interface/legacy/common';
+import * as alerts from '../alerts';
+import { abridgeErrorMessage } from '../error-format';
+import { getAuthHeader } from '../api-token';
+import { getEcosystem } from '../ecosystems';
+import { Issue } from '../ecosystems/types';
+import { assembleEcosystemPayloads } from './assemble-payloads';
+import { NonExistingPackageError } from '../errors/non-existing-package-error';
+import request = require('../request');
+import spinner = require('../spinner');
 
-const debug = debugModule('snyk');
+const debug = debugModule('snyk:run-test');
 
-export = runTest;
+const ANALYTICS_PAYLOAD_MAX_LENGTH = 1024;
 
-interface DepTreeFromResolveDeps extends DepTree {
-  numDependencies: number;
-  pluck: any;
+function prepareResponseForParsing(
+  payload: Payload,
+  response: TestDependenciesResponse,
+  options: Options & TestOptions,
+): any {
+  const ecosystem = getEcosystem(options);
+  return ecosystem
+    ? prepareEcosystemResponseForParsing(payload, response, options)
+    : prepareLanguagesResponseForParsing(payload);
 }
 
-interface PayloadBody {
-  depGraph?: depGraphLib.DepGraph; // missing for legacy endpoint (options.vulnEndpoint)
-  callGraph?: any;
-  policy: string;
-  targetFile?: string;
-  targetFileRelativePath?: string;
-  projectNameOverride?: string;
-  hasDevDependencies?: boolean;
-  originalProjectName?: string; // used only for display
-  foundProjectCount?: number; // used only for display
-  docker?: any;
-  displayTargetFile?: string;
-  target?: GitTarget | ContainerTarget | null;
-}
+function prepareEcosystemResponseForParsing(
+  payload: Payload,
+  response: TestDependenciesResponse,
+  options: Options & TestOptions,
+) {
+  const testDependenciesRequest = payload.body as
+    | TestDependenciesRequest
+    | undefined;
+  const payloadBody = testDependenciesRequest?.scanResult;
+  const depGraphData: depGraphLib.DepGraphData | undefined =
+    response?.result?.depGraphData;
+  const depGraph =
+    depGraphData !== undefined
+      ? depGraphLib.createFromJSON(depGraphData)
+      : undefined;
+  const imageUserInstructions = payloadBody?.facts.find(
+    (fact) =>
+      fact.type === 'dockerfileAnalysis' ||
+      fact.type === 'autoDetectedUserInstructions',
+  );
 
-interface Payload {
-  method: string;
-  url: string;
-  json: boolean;
-  headers: {
-    'x-is-ci': boolean;
-    authorization: string;
+  const dockerfilePackages = imageUserInstructions?.data?.dockerfilePackages;
+  const projectName = payloadBody?.name || depGraph?.rootPkg.name;
+  const packageManager = payloadBody?.identity?.type as SupportedProjectTypes;
+  const targetFile = payloadBody?.identity?.targetFile || options.file;
+  const platform = payloadBody?.identity?.args?.platform;
+
+  analytics.add('depGraph', !!depGraph);
+  analytics.add('isDocker', !!options.docker);
+
+  return {
+    depGraph,
+    dockerfilePackages,
+    projectName,
+    targetFile,
+    pkgManager: packageManager,
+    displayTargetFile: targetFile,
+    foundProjectCount: undefined,
+    payloadPolicy: payloadBody?.policy,
+    platform,
   };
-  body?: PayloadBody;
-  qs?: object | null;
-  modules?: DepTreeFromResolveDeps;
 }
 
-async function runTest(
+function prepareLanguagesResponseForParsing(payload: Payload) {
+  const payloadBody = payload.body as PayloadBody | undefined;
+  const payloadPolicy = payloadBody && payloadBody.policy;
+  const depGraph = payloadBody && payloadBody.depGraph;
+  const pkgManager =
+    depGraph &&
+    depGraph.pkgManager &&
+    (depGraph.pkgManager.name as SupportedProjectTypes);
+  const targetFile = payloadBody && payloadBody.targetFile;
+  const projectName =
+    payloadBody?.projectNameOverride || payloadBody?.originalProjectName;
+  const foundProjectCount = payloadBody?.foundProjectCount;
+  const displayTargetFile = payloadBody?.displayTargetFile;
+  let dockerfilePackages;
+  if (
+    payloadBody &&
+    payloadBody.docker &&
+    payloadBody.docker.dockerfilePackages
+  ) {
+    dockerfilePackages = payloadBody.docker.dockerfilePackages;
+  }
+  analytics.add('depGraph', !!depGraph);
+  analytics.add('isDocker', !!(payloadBody && payloadBody.docker));
+  return {
+    depGraph,
+    payloadPolicy,
+    pkgManager,
+    targetFile,
+    projectName,
+    foundProjectCount,
+    displayTargetFile,
+    dockerfilePackages,
+  };
+}
+
+function isTestDependenciesResponse(
+  response:
+    | IacTestResponse
+    | TestDepGraphResponse
+    | TestDependenciesResponse
+    | LegacyVulnApiResult,
+): response is TestDependenciesResponse {
+  const assumedTestDependenciesResponse = response as TestDependenciesResponse;
+  return assumedTestDependenciesResponse?.result?.issues !== undefined;
+}
+
+function convertIssuesToAffectedPkgs(
+  response:
+    | IacTestResponse
+    | TestDepGraphResponse
+    | TestDependenciesResponse
+    | LegacyVulnApiResult,
+):
+  | IacTestResponse
+  | TestDepGraphResponse
+  | TestDependenciesResponse
+  | LegacyVulnApiResult {
+  if (!(response as any).result) {
+    return response;
+  }
+
+  if (!isTestDependenciesResponse(response)) {
+    return response;
+  }
+
+  response.result['affectedPkgs'] = getAffectedPkgsFromIssues(
+    response.result.issues,
+  );
+  return response;
+}
+
+function getAffectedPkgsFromIssues(issues: Issue[]): AffectedPackages {
+  const result: AffectedPackages = {};
+
+  for (const issue of issues) {
+    const packageId = `${issue.pkgName}@${issue.pkgVersion || ''}`;
+
+    if (result[packageId] === undefined) {
+      result[packageId] = {
+        pkg: { name: issue.pkgName, version: issue.pkgVersion },
+        issues: {},
+      };
+    }
+
+    result[packageId].issues[issue.issueId] = issue;
+  }
+
+  return result;
+}
+
+async function sendAndParseResults(
+  payloads: Payload[],
+  spinnerLbl: string,
+  root: string,
+  options: Options & TestOptions,
+): Promise<TestResult[]> {
+  // Note for the IaC Test Flow:
+  // There is a RATE_LIMIT setup for network requests within a time period.
+  // To support this limit and avoid getting back 502 errors from registry,
+  // we introduced a concurrent requests limit of 25. With that, we will only process MAX 25 requests at the same time.
+  // In the future, we would probably want to introduce a RATE_LIMIT specific for IaC
+
+  if (options.iac) {
+    const maxConcurrent = 25;
+    const queue = new Queue(maxConcurrent);
+    const iacResults: Promise<TestResult>[] = [];
+
+    await spinner.clear<void>(spinnerLbl)();
+    if (!options.quiet) {
+      await spinner(spinnerLbl);
+    }
+    for (const payload of payloads) {
+      iacResults.push(
+        queue.add(async () => {
+          const iacScan: IacScan = payload.body as IacScan;
+          analytics.add('iac type', !!iacScan.type);
+          const res = (await sendTestPayload(payload)) as IacTestResponse;
+
+          const projectName =
+            iacScan.projectNameOverride || iacScan.originalProjectName;
+          return await parseIacTestResult(
+            res,
+            iacScan.targetFile,
+            iacScan.targetFileRelativePath,
+            projectName,
+            options.severityThreshold,
+          );
+        }),
+      );
+    }
+    return Promise.all(iacResults);
+  }
+
+  const results: TestResult[] = [];
+  for (const payload of payloads) {
+    await spinner.clear<void>(spinnerLbl)();
+    if (!options.quiet) {
+      await spinner(spinnerLbl);
+    }
+    /** sendTestPayload() deletes the request.body from the payload once completed. */
+    const payloadCopy = Object.assign({}, payload);
+    const res = await sendTestPayload(payload);
+    const {
+      depGraph,
+      payloadPolicy,
+      pkgManager,
+      targetFile,
+      projectName,
+      foundProjectCount,
+      displayTargetFile,
+      dockerfilePackages,
+      platform,
+    } = prepareResponseForParsing(
+      payloadCopy,
+      res as TestDependenciesResponse,
+      options,
+    );
+
+    const ecosystem = getEcosystem(options);
+    if (ecosystem && options['print-deps']) {
+      await spinner.clear<void>(spinnerLbl)();
+      await maybePrintDepGraph(options, depGraph);
+    }
+
+    const legacyRes = convertIssuesToAffectedPkgs(res);
+
+    const result = await parseRes(
+      depGraph,
+      pkgManager,
+      legacyRes as LegacyVulnApiResult,
+      options,
+      payload,
+      payloadPolicy,
+      root,
+      dockerfilePackages,
+    );
+
+    results.push({
+      ...result,
+      targetFile,
+      projectName,
+      foundProjectCount,
+      displayTargetFile,
+      platform,
+    });
+  }
+  return results;
+}
+
+export async function runTest(
   projectType: SupportedProjectTypes | undefined,
   root: string,
   options: Options & TestOptions,
 ): Promise<TestResult[]> {
-  const results: TestResult[] = [];
   const spinnerLbl = 'Querying vulnerabilities database...';
   try {
     await validateOptions(options, options.packageManager);
     const payloads = await assemblePayloads(root, options);
-    for (const payload of payloads) {
-      const payloadPolicy = payload.body && payload.body.policy;
-      const depGraph = payload.body && payload.body.depGraph;
-      const pkgManager =
-        depGraph && depGraph.pkgManager && depGraph.pkgManager.name;
-      const targetFile = payload.body && payload.body.targetFile;
-      const projectName =
-        _.get(payload, 'body.projectNameOverride') ||
-        _.get(payload, 'body.originalProjectName');
-      const foundProjectCount = _.get(payload, 'body.foundProjectCount');
-      const displayTargetFile = _.get(payload, 'body.displayTargetFile');
-
-      let dockerfilePackages;
-      if (
-        payload.body &&
-        payload.body.docker &&
-        payload.body.docker.dockerfilePackages
-      ) {
-        dockerfilePackages = payload.body.docker.dockerfilePackages;
-      }
-      await spinner(spinnerLbl);
-      analytics.add('depGraph', !!depGraph);
-      analytics.add('isDocker', !!(payload.body && payload.body.docker));
-      // Type assertion might be a lie, but we are correcting that below
-      const res = (await sendTestPayload(payload)) as LegacyVulnApiResult;
-
-      const result = await parseRes(
-        depGraph,
-        pkgManager,
-        res,
-        options,
-        payload,
-        payloadPolicy,
-        root,
-        dockerfilePackages,
-      );
-
-      results.push({
-        ...result,
-        targetFile,
-        projectName,
-        foundProjectCount,
-        displayTargetFile,
-      });
-    }
-    return results;
+    return await sendAndParseResults(payloads, spinnerLbl, root, options);
   } catch (error) {
     debug('Error running test', { error });
     // handling denial from registry because of the feature flag
@@ -147,13 +340,24 @@ async function runTest(
 
     const hasFailedToGetVulnerabilities =
       error.code === 404 &&
-      error.name.includes('FailedToGetVulnerabilitiesError');
+      error.name.includes('FailedToGetVulnerabilitiesError') &&
+      !error.userMessage;
 
     if (isFeatureNotAllowed) {
       throw NoSupportedManifestsFoundError([root]);
     }
     if (hasFailedToGetVulnerabilities) {
       throw FailedToGetVulnsFromUnavailableResource(root, error.code);
+    }
+    if (
+      getEcosystem(options) === 'docker' &&
+      error.statusCode === 401 &&
+      [
+        'authentication required',
+        '{"details":"incorrect username or password"}\n',
+      ].includes(error.message)
+    ) {
+      throw new DockerImageNotFoundError(root);
     }
 
     throw new FailedToRunTestError(
@@ -169,7 +373,7 @@ async function runTest(
 
 async function parseRes(
   depGraph: depGraphLib.DepGraph | undefined,
-  pkgManager: string | undefined,
+  pkgManager: SupportedProjectTypes | undefined,
   res: LegacyVulnApiResult,
   options: Options & TestOptions,
   payload: Payload,
@@ -187,10 +391,10 @@ async function parseRes(
       pkgManager,
       options.severityThreshold,
     );
-
     // For Node.js: inject additional information (for remediation etc.) into the response.
     if (payload.modules) {
-      res.dependencyCount = payload.modules.numDependencies;
+      res.dependencyCount =
+        payload.modules.numDependencies || depGraph.getPkgs().length - 1;
       if (res.vulnerabilities) {
         res.vulnerabilities.forEach((vuln) => {
           if (payload.modules && payload.modules.pluck) {
@@ -255,8 +459,15 @@ async function parseRes(
 
 function sendTestPayload(
   payload: Payload,
-): Promise<LegacyVulnApiResult | TestDepGraphResponse> {
-  const filesystemPolicy = payload.body && !!payload.body.policy;
+): Promise<
+  | LegacyVulnApiResult
+  | TestDepGraphResponse
+  | IacTestResponse
+  | TestDependenciesResponse
+> {
+  const payloadBody = payload.body as any;
+  const filesystemPolicy =
+    payload.body && !!(payloadBody?.policy || payloadBody?.scanResult?.policy);
   return new Promise((resolve, reject) => {
     request(payload, (error, res, body) => {
       if (error) {
@@ -281,6 +492,10 @@ function handleTestHttpErrorResponse(res, body) {
     case 401:
     case 403:
       err = AuthFailedError(userMessage, statusCode);
+      err.innerError = body.stack;
+      break;
+    case 404:
+      err = new NonExistingPackageError();
       err.innerError = body.stack;
       break;
     case 405:
@@ -310,6 +525,11 @@ function assemblePayloads(
     isLocal = fs.existsSync(root);
   }
   analytics.add('local', isLocal);
+
+  const ecosystem = getEcosystem(options);
+  if (ecosystem) {
+    return assembleEcosystemPayloads(ecosystem, options);
+  }
   if (isLocal) {
     return assembleLocalPayloads(root, options);
   }
@@ -319,32 +539,61 @@ function assemblePayloads(
 // Payload to send to the Registry for scanning a package from the local filesystem.
 async function assembleLocalPayloads(
   root,
-  options: Options & TestOptions,
+  options: Options & TestOptions & PolicyOptions,
 ): Promise<Payload[]> {
   // For --all-projects packageManager is yet undefined here. Use 'all'
-  const analysisType =
-    (options.docker ? 'docker' : options.packageManager) || 'all';
+  let analysisTypeText = 'all dependencies for ';
+  if (options.docker) {
+    analysisTypeText = 'docker dependencies for ';
+  } else if (options.iac) {
+    analysisTypeText = 'Infrastructure as code configurations for ';
+  } else if (options.packageManager) {
+    analysisTypeText = options.packageManager + ' dependencies for ';
+  }
+
   const spinnerLbl =
     'Analyzing ' +
-    analysisType +
-    ' dependencies for ' +
+    analysisTypeText +
     (path.relative('.', path.join(root, options.file || '')) ||
       path.relative('..', '.') + ' project dir');
 
   try {
     const payloads: Payload[] = [];
-
-    await spinner(spinnerLbl);
+    await spinner.clear<void>(spinnerLbl)();
+    if (!options.quiet) {
+      await spinner(spinnerLbl);
+    }
+    if (options.iac) {
+      return assembleIacLocalPayloads(root, options);
+    }
     const deps = await getDepsFromPlugin(root, options);
+    const failedResults = (deps as MultiProjectResultCustom).failedResults;
+    if (failedResults?.length) {
+      await spinner.clear<void>(spinnerLbl)();
+      if (!options.json && !options.quiet) {
+        console.warn(
+          chalk.bold.red(
+            `✗ ${failedResults.length}/${failedResults.length +
+              deps.scannedProjects
+                .length} potential projects failed to get dependencies. Run with \`-d\` for debug output.`,
+          ),
+        );
+      }
+    }
     analytics.add('pluginName', deps.plugin.name);
-    const javaVersion = _.get(
+    const javaVersion = get(
       deps.plugin,
       'meta.versionBuildInfo.metaBuildVersion.javaVersion',
       null,
     );
-    const mvnVersion = _.get(
+    const mvnVersion = get(
       deps.plugin,
       'meta.versionBuildInfo.metaBuildVersion.mvnVersion',
+      null,
+    );
+    const sbtVersion = get(
+      deps.plugin,
+      'meta.versionBuildInfo.metaBuildVersion.sbtVersion',
       null,
     );
     if (javaVersion) {
@@ -352,6 +601,9 @@ async function assembleLocalPayloads(
     }
     if (mvnVersion) {
       analytics.add('mvnVersion', mvnVersion);
+    }
+    if (sbtVersion) {
+      analytics.add('sbtVersion', sbtVersion);
     }
 
     for (const scannedProject of deps.scannedProjects) {
@@ -397,20 +649,32 @@ async function assembleLocalPayloads(
         }
       }
 
-      let policyLocations: string[] = [options['policy-path'] || root];
-      if (options.docker) {
-        policyLocations = policyLocations.filter((loc) => {
-          return loc !== root;
-        });
-      } else if (
-        packageManager &&
-        ['npm', 'yarn'].indexOf(packageManager) > -1
-      ) {
-        policyLocations = policyLocations.concat(pluckPolicies(pkg));
-      }
-      debug('policies found', policyLocations);
+      // todo: normalize what target file gets used across plugins and functions
+      const targetFile =
+        scannedProject.targetFile || deps.plugin.targetFile || options.file;
 
-      analytics.add('policies', policyLocations.length);
+      // Forcing options.path to be a string as pathUtil requires is to be stringified
+      const targetFileRelativePath = targetFile
+        ? pathUtil.join(pathUtil.resolve(`${options.path || root}`), targetFile)
+        : '';
+
+      let targetFileDir;
+
+      if (targetFileRelativePath) {
+        const { dir } = path.parse(targetFileRelativePath);
+        targetFileDir = dir;
+      }
+
+      const policy = await findAndLoadPolicy(
+        root,
+        options.docker ? 'docker' : packageManager!,
+        options,
+        // TODO: fix this and send only send when we used resolve-deps for node
+        // it should be a ExpandedPkgTree type instead
+        pkg,
+        targetFileDir,
+      );
+
       analytics.add('packageManager', packageManager);
       if (scannedProject.depGraph) {
         const depGraph = pkg as depGraphLib.DepGraph;
@@ -420,28 +684,6 @@ async function assembleLocalPayloads(
         const depTree = pkg as DepTree;
         addPackageAnalytics(depTree.name!, depTree.version!);
       }
-
-      let policy;
-      if (policyLocations.length > 0) {
-        try {
-          policy = await snyk.policy.load(policyLocations, options);
-        } catch (err) {
-          // note: inline catch, to handle error from .load
-          //   if the .snyk file wasn't found, it is fine
-          if (err.code !== 'ENOENT') {
-            throw err;
-          }
-        }
-      }
-
-      // todo: normalize what target file gets used across plugins and functions
-      const targetFile =
-        scannedProject.targetFile || deps.plugin.targetFile || options.file;
-
-      // Forcing options.path to be a string as pathUtil requires is to be stringified
-      const targetFileRelativePath = targetFile
-        ? pathUtil.join(pathUtil.resolve(`${options.path}`), targetFile)
-        : '';
 
       let target: GitTarget | ContainerTarget | null;
       if (scannedProject.depGraph) {
@@ -466,8 +708,8 @@ async function assembleLocalPayloads(
         targetFileRelativePath: `${targetFileRelativePath}`, // Forcing string
         projectNameOverride: options.projectName,
         originalProjectName,
-        policy: policy && policy.toString(),
-        foundProjectCount: getSubProjectCount(deps),
+        policy: policy ? policy.toString() : undefined,
+        foundProjectCount: await getExtraProjectCount(root, options, deps),
         displayTargetFile: targetFile,
         docker: (pkg as DepTree).docker,
         hasDevDependencies: (pkg as any).hasDevDependencies,
@@ -497,41 +739,51 @@ async function assembleLocalPayloads(
           });
         }
 
-        const pruneIsRequired = options['prune-repeated-subdependencies'];
+        const pruneIsRequired = options.pruneRepeatedSubdependencies;
 
-        if (pruneIsRequired && packageManager) {
-          debug('Trying to prune the graph');
-          const prePruneDepCount = countPathsToGraphRoot(depGraph);
-          debug('pre prunedPathsCount: ' + prePruneDepCount);
-
+        if (packageManager) {
           depGraph = await pruneGraph(
             depGraph,
             packageManager,
             pruneIsRequired,
           );
-          analytics.add('prePrunedPathsCount', prePruneDepCount);
-          const postPruneDepCount = countPathsToGraphRoot(depGraph);
-          debug('post prunedPathsCount: ' + postPruneDepCount);
-          analytics.add('postPrunedPathsCount', postPruneDepCount);
         }
         body.depGraph = depGraph;
       }
 
-      if (scannedProject.callGraph) {
+      if (
+        options.reachableVulns &&
+        (scannedProject.callGraph as CallGraphError)?.message
+      ) {
+        const err = scannedProject.callGraph as CallGraphError;
+        const analyticsError = err.innerError || err;
+        analytics.add('callGraphError', {
+          errorType: analyticsError.constructor?.name,
+          message: abridgeErrorMessage(
+            analyticsError.message.toString(),
+            ANALYTICS_PAYLOAD_MAX_LENGTH,
+          ),
+        });
+        alerts.registerAlerts([
+          {
+            type: 'error',
+            name: 'missing-call-graph',
+            msg: err.message,
+          },
+        ]);
+      } else if (scannedProject.callGraph) {
         const {
           callGraph,
           nodeCount,
           edgeCount,
-        } = serializeCallGraphWithMetrics(scannedProject.callGraph);
+        } = serializeCallGraphWithMetrics(
+          scannedProject.callGraph as CallGraph,
+        );
         debug(
           `Adding call graph to payload, node count: ${nodeCount}, edge count: ${edgeCount}`,
         );
 
-        const callGraphMetrics = _.get(
-          deps.plugin,
-          'meta.callGraphMetrics',
-          {},
-        );
+        const callGraphMetrics = get(deps.plugin, 'meta.callGraphMetrics', {});
         analytics.add('callGraphMetrics', {
           callGraphEdgeCount: edgeCount,
           callGraphNodeCount: nodeCount,
@@ -539,14 +791,18 @@ async function assembleLocalPayloads(
         });
         body.callGraph = callGraph;
       }
-
+      const reqUrl =
+        config.API +
+        (options.testDepGraphDockerEndpoint ||
+          options.vulnEndpoint ||
+          '/test-dep-graph');
       const payload: Payload = {
         method: 'POST',
-        url: config.API + (options.vulnEndpoint || '/test-dep-graph'),
+        url: reqUrl,
         json: true,
         headers: {
           'x-is-ci': isCI(),
-          authorization: 'token ' + (snyk as any).api,
+          authorization: getAuthHeader(),
         },
         qs: common.assembleQueryString(options),
         body,

@@ -9,12 +9,22 @@ export const DockerTests: AcceptanceTests = {
   tests: {
     '`test foo:latest --docker`': (params) => async (t) => {
       const spyPlugin = stubDockerPluginResponse(
-        params.plugins,
+        params.ecoSystemPlugins,
         {
-          plugin: {
-            packageManager: 'deb',
-          },
-          package: {},
+          scanResults: [
+            {
+              facts: [
+                { type: 'depGraph', data: {} },
+                { type: 'dockerfileAnalysis', data: {} },
+              ],
+              identity: {
+                type: 'deb',
+              },
+              target: {
+                image: 'docker-image|ubuntu',
+              },
+            },
+          ],
         },
         t,
       );
@@ -30,16 +40,29 @@ export const DockerTests: AcceptanceTests = {
         params.versionNumber,
         'sends version number',
       );
-      t.match(req.url, '/test-dep-graph', 'posts to correct url');
-      t.equal(req.body.depGraph.pkgManager.name, 'deb');
+      t.match(req.url, '/test-dependencies', 'posts to correct url');
+      t.deepEqual(
+        req.body,
+        {
+          scanResult: {
+            facts: [
+              { type: 'depGraph', data: {} },
+              { type: 'dockerfileAnalysis', data: {} },
+            ],
+            identity: {
+              type: 'deb',
+            },
+            target: {
+              image: 'docker-image|ubuntu',
+            },
+          },
+        },
+        'sends correct payload',
+      );
       t.same(
         spyPlugin.getCall(0).args,
         [
-          'foo:latest',
-          null,
           {
-            args: null,
-            file: null,
             docker: true,
             org: 'explicit-org',
             projectName: null,
@@ -52,24 +75,36 @@ export const DockerTests: AcceptanceTests = {
       );
     },
 
-    '`test docker-archive:foo.tar --docker --experimental`': (params) => async (
+    '`test foo:latest --docker --platform=linux/amd64`': (params) => async (
       t,
     ) => {
       const spyPlugin = stubDockerPluginResponse(
-        params.plugins,
+        params.ecoSystemPlugins,
         {
-          plugin: {
-            packageManager: 'deb',
-          },
-          package: {},
+          scanResults: [
+            {
+              facts: [
+                { type: 'depGraph', data: {} },
+                { type: 'dockerfileAnalysis', data: {} },
+              ],
+              identity: {
+                type: 'deb',
+                args: {
+                  platform: 'linux/amd64',
+                },
+              },
+              target: {
+                image: 'docker-image|ubuntu',
+              },
+            },
+          ],
         },
         t,
       );
 
-      await params.cli.test('docker-archive:foo.tar', {
+      await params.cli.test('foo:latest', {
         docker: true,
-        org: 'experimental-org',
-        experimental: true,
+        org: 'explicit-org',
       });
       const req = params.server.popRequest();
       t.equal(req.method, 'POST', 'makes POST request');
@@ -78,23 +113,38 @@ export const DockerTests: AcceptanceTests = {
         params.versionNumber,
         'sends version number',
       );
-      t.match(req.url, '/test-dep-graph', 'posts to correct url');
-      t.equal(req.body.depGraph.pkgManager.name, 'deb');
+      t.match(req.url, '/test-dependencies', 'posts to correct url');
+      t.deepEqual(
+        req.body,
+        {
+          scanResult: {
+            facts: [
+              { type: 'depGraph', data: {} },
+              { type: 'dockerfileAnalysis', data: {} },
+            ],
+            identity: {
+              type: 'deb',
+              args: {
+                platform: 'linux/amd64',
+              },
+            },
+            target: {
+              image: 'docker-image|ubuntu',
+            },
+          },
+        },
+        'sends correct payload',
+      );
       t.same(
         spyPlugin.getCall(0).args,
         [
-          'docker-archive:foo.tar',
-          null,
           {
-            args: null,
-            file: null,
             docker: true,
-            org: 'experimental-org',
+            org: 'explicit-org',
             projectName: null,
             packageManager: null,
-            path: 'docker-archive:foo.tar',
+            path: 'foo:latest',
             showVulnPaths: 'some',
-            experimental: true,
           },
         ],
         'calls docker plugin with expected arguments',
@@ -103,27 +153,22 @@ export const DockerTests: AcceptanceTests = {
 
     '`test foo:latest --docker vulnerable paths`': (params) => async (t) => {
       stubDockerPluginResponse(
-        params.plugins,
+        params.ecoSystemPlugins,
         {
-          plugin: {
-            packageManager: 'deb',
-          },
-          package: {
-            name: 'docker-image',
-            dependencies: {
-              'apt/libapt-pkg5.0': {
-                version: '1.6.3ubuntu0.1',
-                dependencies: {
-                  'bzip2/libbz2-1.0': {
-                    version: '1.0.6-8.1',
-                  },
-                },
+          scanResults: [
+            {
+              facts: [
+                { type: 'depGraph', data: {} },
+                { type: 'dockerfileAnalysis', data: {} },
+              ],
+              identity: {
+                type: 'deb',
               },
-              'bzip2/libbz2-1.0': {
-                version: '1.0.6-8.1',
+              target: {
+                image: 'docker-image|ubuntu',
               },
             },
-          },
+          ],
         },
         t,
       );
@@ -155,20 +200,39 @@ export const DockerTests: AcceptanceTests = {
       }
     },
 
-    '`test foo:latest --docker --file=Dockerfile`': (params, utils) => async (
-      t,
-    ) => {
+    '`test foo:latest --docker --file=Dockerfile`': (params) => async (t) => {
       const spyPlugin = stubDockerPluginResponse(
-        params.plugins,
+        params.ecoSystemPlugins,
         {
-          plugin: {
-            packageManager: 'deb',
-          },
-          package: {
-            docker: {
-              baseImage: 'ubuntu:14.04',
+          scanResults: [
+            {
+              facts: [
+                { type: 'depGraph', data: {} },
+                {
+                  type: 'dockerfileAnalysis',
+                  data: {
+                    baseImage: 'nginx:1.18.0',
+                    dockerfilePackages: {
+                      'openssl@1.5.0': {
+                        instruction: 'RUN apk add openssl@1.5.0',
+                      },
+                    },
+                    dockerfileLayers: {
+                      'UlVOIGFwayBhZGQgb3BlbnNzbEAxLjUuMA==': {
+                        instruction: 'RUN apk add openssl@1.5.0',
+                      },
+                    },
+                  },
+                },
+              ],
+              identity: {
+                type: 'deb',
+              },
+              target: {
+                image: 'docker-image|ubuntu',
+              },
             },
-          },
+          ],
         },
         t,
       );
@@ -186,20 +250,44 @@ export const DockerTests: AcceptanceTests = {
         params.versionNumber,
         'sends version number',
       );
-      t.match(req.url, '/test-dep-graph', 'posts to correct url');
-      t.equal(req.body.depGraph.pkgManager.name, 'deb');
-      t.equal(
-        req.body.docker.baseImage,
-        'ubuntu:14.04',
-        'posts docker baseImage',
+      t.match(req.url, '/test-dependencies', 'posts to correct url');
+      t.deepEqual(
+        req.body,
+        {
+          scanResult: {
+            facts: [
+              { type: 'depGraph', data: {} },
+              {
+                type: 'dockerfileAnalysis',
+                data: {
+                  baseImage: 'nginx:1.18.0',
+                  dockerfilePackages: {
+                    'openssl@1.5.0': {
+                      instruction: 'RUN apk add openssl@1.5.0',
+                    },
+                  },
+                  dockerfileLayers: {
+                    'UlVOIGFwayBhZGQgb3BlbnNzbEAxLjUuMA==': {
+                      instruction: 'RUN apk add openssl@1.5.0',
+                    },
+                  },
+                },
+              },
+            ],
+            identity: {
+              type: 'deb',
+            },
+            target: {
+              image: 'docker-image|ubuntu',
+            },
+          },
+        },
+        'sends correct payload',
       );
       t.same(
         spyPlugin.getCall(0).args,
         [
-          'foo:latest',
-          'Dockerfile',
           {
-            args: null,
             file: 'Dockerfile',
             docker: true,
             org: 'explicit-org',
@@ -217,8 +305,23 @@ export const DockerTests: AcceptanceTests = {
       params,
     ) => async (t) => {
       stubDockerPluginResponse(
-        params.plugins,
-        '../fixtures/docker/plugin-multiple-deps',
+        params.ecoSystemPlugins,
+        {
+          scanResults: [
+            {
+              facts: [
+                { type: 'depGraph', data: {} },
+                { type: 'dockerfileAnalysis', data: {} },
+              ],
+              identity: {
+                type: 'deb',
+              },
+              target: {
+                image: 'docker-image|ubuntu',
+              },
+            },
+          ],
+        },
         t,
       );
       const vulns = require('../fixtures/docker/find-result-remediation.json');
@@ -244,12 +347,22 @@ export const DockerTests: AcceptanceTests = {
     ) => async (t) => {
       utils.chdirWorkspaces('npm-package-policy');
       const spyPlugin = stubDockerPluginResponse(
-        params.plugins,
+        params.ecoSystemPlugins,
         {
-          plugin: {
-            packageManager: 'deb',
-          },
-          package: {},
+          scanResults: [
+            {
+              facts: [
+                { type: 'depGraph', data: {} },
+                { type: 'dockerfileAnalysis', data: {} },
+              ],
+              identity: {
+                type: 'deb',
+              },
+              target: {
+                image: 'docker-image|ubuntu',
+              },
+            },
+          ],
         },
         t,
       );
@@ -265,16 +378,29 @@ export const DockerTests: AcceptanceTests = {
         params.versionNumber,
         'sends version number',
       );
-      t.match(req.url, '/test-dep-graph', 'posts to correct url');
-      t.equal(req.body.depGraph.pkgManager.name, 'deb');
+      t.match(req.url, '/test-dependencies', 'posts to correct url');
+      t.deepEqual(
+        req.body,
+        {
+          scanResult: {
+            facts: [
+              { type: 'depGraph', data: {} },
+              { type: 'dockerfileAnalysis', data: {} },
+            ],
+            identity: {
+              type: 'deb',
+            },
+            target: {
+              image: 'docker-image|ubuntu',
+            },
+          },
+        },
+        'sends correct payload',
+      );
       t.same(
         spyPlugin.getCall(0).args,
         [
-          'foo:latest',
-          null,
           {
-            args: null,
-            file: null,
             docker: true,
             org: 'explicit-org',
             projectName: null,
@@ -285,7 +411,7 @@ export const DockerTests: AcceptanceTests = {
         ],
         'calls docker plugin with expected arguments',
       );
-      const policyString = req.body.policy;
+      const policyString = req.body.scanResult.policy;
       t.false(policyString, 'policy not sent');
     },
 
@@ -294,13 +420,28 @@ export const DockerTests: AcceptanceTests = {
       utils,
     ) => async (t) => {
       utils.chdirWorkspaces();
+      const policyString = fs.readFileSync(
+        path.join('npm-package-policy/custom-location', '.snyk'),
+        'utf8',
+      );
       const spyPlugin = stubDockerPluginResponse(
-        params.plugins,
+        params.ecoSystemPlugins,
         {
-          plugin: {
-            packageManager: 'deb',
-          },
-          package: {},
+          scanResults: [
+            {
+              facts: [
+                { type: 'depGraph', data: {} },
+                { type: 'dockerfileAnalysis', data: {} },
+              ],
+              identity: {
+                type: 'deb',
+              },
+              target: {
+                image: 'docker-image|ubuntu',
+              },
+              policy: policyString,
+            },
+          ],
         },
         t,
       );
@@ -311,16 +452,30 @@ export const DockerTests: AcceptanceTests = {
         'policy-path': 'npm-package-policy/custom-location',
       });
       const req = params.server.popRequest();
-      t.match(req.url, '/test-dep-graph', 'posts to correct url');
-      t.equal(req.body.depGraph.pkgManager.name, 'deb');
+      t.match(req.url, '/test-dependencies', 'posts to correct url');
+      t.deepEqual(
+        req.body,
+        {
+          scanResult: {
+            facts: [
+              { type: 'depGraph', data: {} },
+              { type: 'dockerfileAnalysis', data: {} },
+            ],
+            identity: {
+              type: 'deb',
+            },
+            target: {
+              image: 'docker-image|ubuntu',
+            },
+            policy: policyString,
+          },
+        },
+        'sends correct payload',
+      );
       t.same(
         spyPlugin.getCall(0).args,
         [
-          'foo:latest',
-          null,
           {
-            args: null,
-            file: null,
             docker: true,
             org: 'explicit-org',
             projectName: null,
@@ -332,27 +487,32 @@ export const DockerTests: AcceptanceTests = {
         ],
         'calls docker plugin with expected arguments',
       );
-
-      const expected = fs.readFileSync(
-        path.join('npm-package-policy/custom-location', '.snyk'),
-        'utf8',
-      );
-      const policyString = req.body.policy;
-      t.equal(policyString, expected, 'sends correct policy');
     },
 
     '`test foo:latest --docker with binaries`': (params) => async (t) => {
       const spyPlugin = stubDockerPluginResponse(
-        params.plugins,
+        params.ecoSystemPlugins,
         {
-          plugin: {
-            packageManager: 'deb',
-          },
-          package: {
-            docker: {
-              binaries: [{ name: 'node', version: '5.10.1' }],
+          scanResults: [
+            {
+              facts: [
+                { type: 'depGraph', data: {} },
+                { type: 'dockerfileAnalysis', data: {} },
+                {
+                  type: 'keyBinariesHashes',
+                  data: [
+                    '9191fbcdcc737314df97c5016a841199b743ac3fa9959dfade38e17bfdaf30b5',
+                  ],
+                },
+              ],
+              identity: {
+                type: 'deb',
+              },
+              target: {
+                image: 'docker-image|ubuntu',
+              },
             },
-          },
+          ],
         },
         t,
       );
@@ -368,21 +528,35 @@ export const DockerTests: AcceptanceTests = {
         params.versionNumber,
         'sends version number',
       );
-      t.match(req.url, '/test-dep-graph', 'posts to correct url');
-      t.equal(req.body.depGraph.pkgManager.name, 'deb');
-      t.same(
-        req.body.docker.binaries,
-        [{ name: 'node', version: '5.10.1' }],
-        'posts docker binaries',
+      t.match(req.url, '/test-dependencies', 'posts to correct url');
+      t.deepEqual(
+        req.body,
+        {
+          scanResult: {
+            facts: [
+              { type: 'depGraph', data: {} },
+              { type: 'dockerfileAnalysis', data: {} },
+              {
+                type: 'keyBinariesHashes',
+                data: [
+                  '9191fbcdcc737314df97c5016a841199b743ac3fa9959dfade38e17bfdaf30b5',
+                ],
+              },
+            ],
+            identity: {
+              type: 'deb',
+            },
+            target: {
+              image: 'docker-image|ubuntu',
+            },
+          },
+        },
+        'sends correct payload',
       );
       t.same(
         spyPlugin.getCall(0).args,
         [
-          'foo:latest',
-          null,
           {
-            args: null,
-            file: null,
             docker: true,
             org: 'explicit-org',
             projectName: null,
@@ -399,35 +573,28 @@ export const DockerTests: AcceptanceTests = {
       params,
     ) => async (t) => {
       stubDockerPluginResponse(
-        params.plugins,
+        params.ecoSystemPlugins,
         {
-          plugin: {
-            packageManager: 'deb',
-          },
-          package: {
-            name: 'docker-image',
-            dependencies: {
-              'apt/libapt-pkg5.0': {
-                version: '1.6.3ubuntu0.1',
-                dependencies: {
-                  'bzip2/libbz2-1.0': {
-                    version: '1.0.6-8.1',
-                  },
+          scanResults: [
+            {
+              facts: [
+                { type: 'depGraph', data: {} },
+                { type: 'dockerfileAnalysis', data: {} },
+                {
+                  type: 'keyBinariesHashes',
+                  data: [
+                    '9191fbcdcc737314df97c5016a841199b743ac3fa9959dfade38e17bfdaf30b5',
+                  ],
                 },
+              ],
+              identity: {
+                type: 'deb',
               },
-              'bzip2/libbz2-1.0': {
-                version: '1.0.6-8.1',
-              },
-              'bzr/libbz2-1.0': {
-                version: '1.0.6-8.1',
-              },
-            },
-            docker: {
-              binaries: {
-                Analysis: [{ name: 'node', version: '5.10.1' }],
+              target: {
+                image: 'docker-image|ubuntu',
               },
             },
-          },
+          ],
         },
         t,
       );
@@ -466,22 +633,213 @@ export const DockerTests: AcceptanceTests = {
         t.match(msg, 'Fixed in: 5.15.1');
       }
     },
+
+    '`test foo:latest --docker with dockerfile instructions`': (
+      params,
+    ) => async (t) => {
+      stubDockerPluginResponse(
+        params.ecoSystemPlugins,
+        {
+          scanResults: [
+            {
+              facts: [
+                { type: 'depGraph', data: {} },
+                {
+                  type: 'dockerfileAnalysis',
+                  data: {
+                    dockerfilePackages: {
+                      bzip2: {
+                        instruction: 'RUN test instruction',
+                      },
+                    },
+                  },
+                },
+              ],
+              identity: {
+                type: 'deb',
+              },
+              target: {
+                image: 'docker-image|ubuntu',
+              },
+            },
+          ],
+        },
+        t,
+      );
+
+      const vulns = require('../fixtures/docker/find-result-remediation.json');
+      params.server.setNextResponse(vulns);
+
+      try {
+        await params.cli.test('foo:latest', {
+          docker: true,
+          org: 'explicit-org',
+        });
+        t.fail('should have found vuln');
+      } catch (err) {
+        const msg = err.message;
+        t.match(msg, "Image layer: 'RUN test instruction'");
+      }
+    },
+
+    '`test foo:latest --docker with auto detected instructions`': (
+      params,
+    ) => async (t) => {
+      stubDockerPluginResponse(
+        params.ecoSystemPlugins,
+        {
+          scanResults: [
+            {
+              facts: [
+                { type: 'depGraph', data: {} },
+                {
+                  type: 'autoDetectedUserInstructions',
+                  data: {
+                    dockerfilePackages: {
+                      bzip2: {
+                        instruction: 'RUN test instruction',
+                      },
+                    },
+                  },
+                },
+              ],
+              identity: {
+                type: 'deb',
+              },
+              target: {
+                image: 'docker-image|ubuntu',
+              },
+            },
+          ],
+        },
+        t,
+      );
+
+      const vulns = require('../fixtures/docker/find-result-remediation.json');
+      params.server.setNextResponse(vulns);
+
+      try {
+        await params.cli.test('foo:latest', {
+          docker: true,
+          org: 'explicit-org',
+        });
+        t.fail('should have found vuln');
+      } catch (err) {
+        const msg = err.message;
+        t.match(msg, "Image layer: 'RUN test instruction'");
+      }
+    },
+
+    '`test --docker --file=Dockerfile --sarif `': (params, utils) => async (
+      t,
+    ) => {
+      const testableObject = await testSarif(t, utils, params, { sarif: true });
+      const results = JSON.parse(testableObject.message);
+      const sarifResults = require('../fixtures/docker/sarif-container-result.json');
+      t.deepEqual(results, sarifResults, 'stdout containing sarif results');
+      t.end();
+    },
+
+    '`test --docker --file=Dockerfile --sarif --sarif-output-file`': (
+      params,
+      utils,
+    ) => async (t) => {
+      const testableObject = await testSarif(t, utils, params, {
+        sarif: true,
+        'sarif-output-file': 'sarif-test-file.json',
+      });
+      const results = JSON.parse(testableObject.message);
+      const sarifStringifiedResults = JSON.parse(
+        testableObject.sarifStringifiedResults,
+      );
+      t.deepEqual(
+        results,
+        sarifStringifiedResults,
+        'stdout and stringified sarif results are the same',
+      );
+      t.end();
+    },
+
+    '`test --docker doesnotexist`': (params) => async (t) => {
+      try {
+        await params.cli.test('doesnotexist', {
+          docker: true,
+          org: 'explicit-org',
+        });
+        t.fail('should have thrown');
+      } catch (err) {
+        const msg = err.message;
+        t.match(
+          msg,
+          'Failed to scan image "doesnotexist". Please make sure the image and/or repository exist, and that you are using the correct credentials.',
+        );
+      }
+    },
   },
 };
 
 // fixture can be fixture path or object
 function stubDockerPluginResponse(plugins, fixture: string | object, t) {
   const plugin = {
-    async inspect() {
+    async scan() {
       return typeof fixture === 'object' ? fixture : require(fixture);
     },
+    async display() {
+      return '';
+    },
   };
-  const spyPlugin = sinon.spy(plugin, 'inspect');
-  const loadPlugin = sinon.stub(plugins, 'loadPlugin');
-  loadPlugin
-    .withArgs(sinon.match.any, sinon.match({ docker: true }))
-    .returns(plugin);
+  const spyPlugin = sinon.spy(plugin, 'scan');
+  const loadPlugin = sinon.stub(plugins, 'getPlugin');
+  loadPlugin.withArgs(sinon.match.any).returns(plugin);
   t.teardown(loadPlugin.restore);
 
   return spyPlugin;
+}
+
+async function testSarif(t, utils, params, flags) {
+  stubDockerPluginResponse(
+    params.ecoSystemPlugins,
+    {
+      scanResults: [
+        {
+          facts: [
+            { type: 'depGraph', data: {} },
+            { type: 'dockerfileAnalysis', data: {} },
+            {
+              type: 'keyBinariesHashes',
+              data: [
+                '9191fbcdcc737314df97c5016a841199b743ac3fa9959dfade38e17bfdaf30b5',
+              ],
+            },
+          ],
+          identity: {
+            type: 'deb',
+          },
+          target: {
+            image: 'docker-image|ubuntu',
+          },
+        },
+      ],
+    },
+    t,
+  );
+
+  const testableObject = await testPrep(t, utils, params, flags);
+  return testableObject;
+}
+
+async function testPrep(t, utils, params, additionaLpropsForCli) {
+  utils.chdirWorkspaces();
+  const vulns = require('../fixtures/docker/find-result.json');
+  params.server.setNextResponse(vulns);
+
+  try {
+    await params.cli.test('test alpine', {
+      docker: true,
+      ...additionaLpropsForCli,
+    });
+    t.fail('should have thrown');
+  } catch (testableObject) {
+    return testableObject;
+  }
 }

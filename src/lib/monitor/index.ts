@@ -1,14 +1,25 @@
 import * as Debug from 'debug';
+import * as path from 'path';
+
 import * as depGraphLib from '@snyk/dep-graph';
 import * as snyk from '..';
-import { apiTokenExists } from '../api-token';
+import { apiOrOAuthTokenExists, getAuthHeader } from '../api-token';
 import request = require('../request');
 import * as config from '../config';
 import * as os from 'os';
-import * as _ from '@snyk/lodash';
+const get = require('lodash.get');
+const camelCase = require('lodash.camelcase');
 import { isCI } from '../is-ci';
 import * as analytics from '../analytics';
-import { DepTree, MonitorMeta, MonitorResult } from '../types';
+import {
+  DepTree,
+  MonitorMeta,
+  MonitorResult,
+  PolicyOptions,
+  MonitorOptions,
+  Options,
+  Contributor,
+} from '../types';
 import * as projectMetadata from '../project-metadata';
 
 import {
@@ -24,9 +35,13 @@ import { countTotalDependenciesInTree } from './count-total-deps-in-tree';
 import { filterOutMissingDeps } from './filter-out-missing-deps';
 import { dropEmptyDeps } from './drop-empty-deps';
 import { pruneTree } from './prune-dep-tree';
-import { pluckPolicies } from '../policy';
+import { findAndLoadPolicy } from '../policy';
 import { PluginMetadata } from '@snyk/cli-interface/legacy/plugin';
-import { CallGraph, ScannedProject } from '@snyk/cli-interface/legacy/common';
+import {
+  CallGraph,
+  CallGraphError,
+  ScannedProject,
+} from '@snyk/cli-interface/legacy/common';
 import { isGitTarget } from '../project-metadata/types';
 import { serializeCallGraphWithMetrics } from '../reachable-vulns';
 import {
@@ -36,8 +51,12 @@ import {
   getTargetFile,
 } from './utils';
 import { countPathsToGraphRoot } from '../utils';
+import * as alerts from '../alerts';
+import { abridgeErrorMessage } from '../error-format';
 
 const debug = Debug('snyk');
+
+const ANALYTICS_PAYLOAD_MAX_LENGTH = 1024;
 
 // TODO(kyegupov): clean up the type, move to snyk-cli-interface repository
 
@@ -49,7 +68,7 @@ interface MonitorBody {
   target: {};
   targetFileRelativePath: string;
   targetFile: string;
-  contributors?: { userId: string; lastCommitDate: string }[];
+  contributors?: Contributor[];
 }
 
 interface Meta {
@@ -74,12 +93,12 @@ export async function monitor(
   root: string,
   meta: MonitorMeta,
   scannedProject: ScannedProject,
-  options,
+  options: Options & MonitorOptions & PolicyOptions,
   pluginMeta: PluginMetadata,
   targetFileRelativePath?: string,
-  contributors?: { userId: string; lastCommitDate: string }[],
+  contributors?: Contributor[],
 ): Promise<MonitorResult> {
-  apiTokenExists();
+  apiOrOAuthTokenExists();
 
   const packageManager = meta.packageManager;
   analytics.add('packageManager', packageManager);
@@ -91,6 +110,7 @@ export async function monitor(
       meta,
       scannedProject,
       pluginMeta,
+      options,
       targetFileRelativePath,
       contributors,
     );
@@ -99,7 +119,7 @@ export async function monitor(
   // TODO @boost: delete this once 'experimental-dep-graph' ff is deleted
   if (GRAPH_SUPPORTED_PACKAGE_MANAGERS.includes(packageManager)) {
     const monitorGraphSupportedRes = await isFeatureFlagSupportedForOrg(
-      _.camelCase('experimental-dep-graph'),
+      camelCase('experimental-dep-graph'),
       options.org || config.org,
     );
 
@@ -115,6 +135,7 @@ export async function monitor(
         meta,
         scannedProject,
         pluginMeta,
+        options,
         targetFileRelativePath,
         contributors,
       );
@@ -129,6 +150,7 @@ export async function monitor(
     meta,
     scannedProject,
     pluginMeta,
+    options,
     targetFileRelativePath,
     contributors,
   );
@@ -139,8 +161,9 @@ async function monitorDepTree(
   meta: MonitorMeta,
   scannedProject: ScannedProject,
   pluginMeta: PluginMetadata,
+  options: MonitorOptions & PolicyOptions,
   targetFileRelativePath?: string,
-  contributors?: { userId: string; lastCommitDate: string }[],
+  contributors?: Contributor[],
 ): Promise<MonitorResult> {
   let treeMissingDeps: string[] = [];
 
@@ -173,15 +196,22 @@ async function monitorDepTree(
     treeMissingDeps = missingDeps;
   }
 
-  const policyPath = meta['policy-path'] || root;
-  const policyLocations = [policyPath]
-    .concat(pluckPolicies(depTree))
-    .filter(Boolean);
-  // docker doesn't have a policy as it can be run from anywhere
-  if (!meta.isDocker || !policyLocations.length) {
-    await snyk.policy.create();
+  let targetFileDir;
+
+  if (targetFileRelativePath) {
+    const { dir } = path.parse(targetFileRelativePath);
+    targetFileDir = dir;
   }
-  const policy = await snyk.policy.load(policyLocations, { loose: true });
+
+  const policy = await findAndLoadPolicy(
+    root,
+    meta.isDocker ? 'docker' : packageManager!,
+    options,
+    // TODO: fix this and send only send when we used resolve-deps for node
+    // it should be a ExpandedPkgTree type instead
+    depTree,
+    targetFileDir,
+  );
 
   const target = await projectMetadata.getInfo(scannedProject, meta, depTree);
 
@@ -192,15 +222,34 @@ async function monitorDepTree(
   depTree = dropEmptyDeps(depTree);
 
   let callGraphPayload;
-  if (scannedProject.callGraph) {
+  if (
+    options.reachableVulns &&
+    (scannedProject.callGraph as CallGraphError)?.innerError
+  ) {
+    const err = scannedProject.callGraph as CallGraphError;
+    analytics.add(
+      'callGraphError',
+      abridgeErrorMessage(
+        err.innerError.toString(),
+        ANALYTICS_PAYLOAD_MAX_LENGTH,
+      ),
+    );
+    alerts.registerAlerts([
+      {
+        type: 'error',
+        name: 'missing-call-graph',
+        msg: err.message,
+      },
+    ]);
+  } else if (scannedProject.callGraph) {
     const { callGraph, nodeCount, edgeCount } = serializeCallGraphWithMetrics(
-      scannedProject.callGraph,
+      scannedProject.callGraph as CallGraph,
     );
     debug(
       `Adding call graph to payload, node count: ${nodeCount}, edge count: ${edgeCount}`,
     );
 
-    const callGraphMetrics = _.get(pluginMeta, 'meta.callGraphMetrics', {});
+    const callGraphMetrics = get(pluginMeta, 'meta.callGraphMetrics', {});
     analytics.add('callGraphMetrics', {
       callGraphEdgeCount: edgeCount,
       callGraphNodeCount: nodeCount,
@@ -251,6 +300,8 @@ async function monitorDepTree(
             versionBuildInfo: JSON.stringify(
               scannedProject.meta?.versionBuildInfo,
             ),
+            gradleProjectName: scannedProject.meta?.gradleProjectName,
+            platform: scannedProject.meta?.platform,
           },
           policy: policy ? policy.toString() : undefined,
           package: depTree,
@@ -261,12 +312,12 @@ async function monitorDepTree(
           // WARNING: be careful changing this as it affects project uniqueness
           targetFile: getTargetFile(scannedProject, pluginMeta),
           targetFileRelativePath,
-          contributors: contributors,
+          contributors,
         } as MonitorBody,
         gzip: true,
         method: 'PUT',
         headers: {
-          authorization: 'token ' + snyk.api,
+          authorization: getAuthHeader(),
           'content-encoding': 'gzip',
         },
         url: config.API + '/monitor/' + packageManager,
@@ -299,8 +350,9 @@ export async function monitorDepGraph(
   meta: MonitorMeta,
   scannedProject: ScannedProject,
   pluginMeta: PluginMetadata,
+  options: MonitorOptions & PolicyOptions,
   targetFileRelativePath?: string,
-  contributors?: { userId: string; lastCommitDate: string }[],
+  contributors?: Contributor[],
 ): Promise<MonitorResult> {
   const packageManager = meta.packageManager;
   analytics.add('monitorDepGraph', true);
@@ -316,23 +368,65 @@ export async function monitorDepGraph(
     );
   }
 
-  const policyPath = meta['policy-path'] || root;
-  const policyLocations = [policyPath]
-    .concat(pluckPolicies(depGraph))
-    .filter(Boolean);
+  let targetFileDir;
 
-  if (!policyLocations.length) {
-    await snyk.policy.create();
+  if (targetFileRelativePath) {
+    const { dir } = path.parse(targetFileRelativePath);
+    targetFileDir = dir;
   }
 
-  const policy = await snyk.policy.load(policyLocations, { loose: true });
+  const policy = await findAndLoadPolicy(
+    root,
+    meta.isDocker ? 'docker' : packageManager!,
+    options,
+    undefined,
+    targetFileDir,
+  );
+
   const target = await projectMetadata.getInfo(scannedProject, meta);
   if (isGitTarget(target) && target.branch) {
     analytics.add('targetBranch', target.branch);
   }
 
-  // this graph will be pruned only if is too dense
-  depGraph = await pruneGraph(depGraph, packageManager);
+  const pruneIsRequired = options.pruneRepeatedSubdependencies;
+  depGraph = await pruneGraph(depGraph, packageManager, pruneIsRequired);
+
+  let callGraphPayload;
+  if (
+    options.reachableVulns &&
+    (scannedProject.callGraph as CallGraphError)?.innerError
+  ) {
+    const err = scannedProject.callGraph as CallGraphError;
+    analytics.add(
+      'callGraphError',
+      abridgeErrorMessage(
+        err.innerError.toString(),
+        ANALYTICS_PAYLOAD_MAX_LENGTH,
+      ),
+    );
+    alerts.registerAlerts([
+      {
+        type: 'error',
+        name: 'missing-call-graph',
+        msg: err.message,
+      },
+    ]);
+  } else if (scannedProject.callGraph) {
+    const { callGraph, nodeCount, edgeCount } = serializeCallGraphWithMetrics(
+      scannedProject.callGraph as CallGraph,
+    );
+    debug(
+      `Adding call graph to payload, node count: ${nodeCount}, edge count: ${edgeCount}`,
+    );
+
+    const callGraphMetrics = get(pluginMeta, 'meta.callGraphMetrics', {});
+    analytics.add('callGraphMetrics', {
+      callGraphEdgeCount: edgeCount,
+      callGraphNodeCount: nodeCount,
+      ...callGraphMetrics,
+    });
+    callGraphPayload = callGraph;
+  }
 
   return new Promise((resolve, reject) => {
     if (!depGraph) {
@@ -366,6 +460,7 @@ export async function monitorDepGraph(
             versionBuildInfo: JSON.stringify(
               scannedProject.meta?.versionBuildInfo,
             ),
+            gradleProjectName: scannedProject.meta?.gradleProjectName,
           },
           policy: policy ? policy.toString() : undefined,
           depGraphJSON: depGraph, // depGraph will be auto serialized to JSON on send
@@ -374,12 +469,13 @@ export async function monitorDepGraph(
           target,
           targetFile: getTargetFile(scannedProject, pluginMeta),
           targetFileRelativePath,
-          contributors: contributors,
+          contributors,
+          callGraph: callGraphPayload,
         } as MonitorBody,
         gzip: true,
         method: 'PUT',
         headers: {
-          authorization: 'token ' + snyk.api,
+          authorization: getAuthHeader(),
           'content-encoding': 'gzip',
         },
         url: `${config.API}/monitor/${packageManager}/graph`,
@@ -408,16 +504,17 @@ export async function monitorDepGraph(
 
 /**
  * @deprecated it will be deleted once experimentalDepGraph FF will be deleted
- and npm, yarn, sbt and rubygems usage of `experimentalMonitorDepGraphFromDepTree`
- will be replaced with `monitorDepGraph` method
+ * and npm, yarn, sbt and rubygems usage of `experimentalMonitorDepGraphFromDepTree`
+ * will be replaced with `monitorDepGraph` method
  */
 async function experimentalMonitorDepGraphFromDepTree(
   root: string,
   meta: MonitorMeta,
   scannedProject: ScannedProject,
   pluginMeta: PluginMetadata,
+  options: MonitorOptions & PolicyOptions,
   targetFileRelativePath?: string,
-  contributors?: { userId: string; lastCommitDate: string }[],
+  contributors?: Contributor[],
 ): Promise<MonitorResult> {
   const packageManager = meta.packageManager;
   analytics.add('experimentalMonitorDepGraphFromDepTree', true);
@@ -434,10 +531,22 @@ async function experimentalMonitorDepGraphFromDepTree(
     );
   }
 
-  const policyPath = meta['policy-path'] || root;
-  const policyLocations = [policyPath]
-    .concat(pluckPolicies(depTree))
-    .filter(Boolean);
+  let targetFileDir;
+
+  if (targetFileRelativePath) {
+    const { dir } = path.parse(targetFileRelativePath);
+    targetFileDir = dir;
+  }
+
+  const policy = await findAndLoadPolicy(
+    root,
+    meta.isDocker ? 'docker' : packageManager!,
+    options,
+    // TODO: fix this and send only send when we used resolve-deps for node
+    // it should be a ExpandedPkgTree type instead
+    depTree,
+    targetFileDir,
+  );
 
   if (['npm', 'yarn'].includes(meta.packageManager)) {
     const { filteredDepTree, missingDeps } = filterOutMissingDeps(depTree);
@@ -449,13 +558,6 @@ async function experimentalMonitorDepGraphFromDepTree(
     depTree,
     packageManager,
   );
-
-  // docker doesn't have a policy as it can be run from anywhere
-  if (!meta.isDocker || !policyLocations.length) {
-    await snyk.policy.create();
-  }
-  const policy = await snyk.policy.load(policyLocations, { loose: true });
-
   const target = await projectMetadata.getInfo(scannedProject, meta, depTree);
 
   if (isGitTarget(target) && target.branch) {
@@ -517,12 +619,12 @@ async function experimentalMonitorDepGraphFromDepTree(
           target,
           targetFile: getTargetFile(scannedProject, pluginMeta),
           targetFileRelativePath,
-          contributors: contributors,
+          contributors,
         } as MonitorBody,
         gzip: true,
         method: 'PUT',
         headers: {
-          authorization: 'token ' + snyk.api,
+          authorization: getAuthHeader(),
           'content-encoding': 'gzip',
         },
         url: `${config.API}/monitor/${packageManager}/graph`,

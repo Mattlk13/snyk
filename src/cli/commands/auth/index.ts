@@ -1,15 +1,13 @@
-import * as dns from 'dns';
 import * as url from 'url';
-import * as util from 'util';
 import * as open from 'open';
-import * as uuid from 'uuid';
+import { v4 as uuidv4 } from 'uuid';
 import * as Debug from 'debug';
 import { Spinner } from 'cli-spinner';
-import { IPv6, parse } from 'ipaddr.js';
-
 import * as snyk from '../../../lib';
 import { verifyAPI } from './is-authed';
 import { isCI } from '../../../lib/is-ci';
+import { isDocker } from '../../../lib/is-docker';
+import { args as argsLib } from '../../args';
 import * as config from '../../../lib/config';
 import request = require('../../../lib/request');
 import { CustomError } from '../../../lib/errors';
@@ -21,28 +19,28 @@ import { getQueryParamsAsString } from '../../../lib/query-strings';
 
 export = auth;
 
-const dnsLookupPromise = util.promisify(dns.lookup);
-
 const apiUrl = url.parse(config.API);
 const authUrl = apiUrl.protocol + '//' + apiUrl.host;
 const debug = Debug('snyk-auth');
 let attemptsLeft = 0;
 
 function resetAttempts() {
-  attemptsLeft = 30;
+  attemptsLeft = isDocker() ? 60 : 30;
 }
 
 type AuthCliCommands = 'wizard' | 'ignore';
 
 async function webAuth(via: AuthCliCommands) {
-  const token = uuid.v4(); // generate a random key
+  const token = uuidv4(); // generate a random key
   const redirects = {
     wizard: '/authenticated',
   };
 
   let urlStr = authUrl + '/login?token=' + token;
 
-  const utmParams = getQueryParamsAsString();
+  // It's not optimal, but I have to parse args again here. Alternative is reworking everything about how we parse args
+  const args = [argsLib(process.argv).options];
+  const utmParams = getQueryParamsAsString(args);
   if (utmParams) {
     urlStr += '&' + utmParams;
   }
@@ -52,16 +50,9 @@ async function webAuth(via: AuthCliCommands) {
     urlStr += '&redirectUri=' + Buffer.from(redirects[via]).toString('base64');
   }
 
-  const msg =
-    '\nNow redirecting you to our auth page, go ahead and log in,\n' +
-    "and once the auth is complete, return to this prompt and you'll\n" +
-    "be ready to start using snyk.\n\nIf you can't wait use this url:\n" +
-    urlStr +
-    '\n';
-
   // suppress this message in CI
   if (!isCI()) {
-    console.log(msg);
+    console.log(browserAuthPrompt(isDocker(), urlStr));
   } else {
     return Promise.reject(MisconfiguredAuthInCI());
   }
@@ -72,9 +63,11 @@ async function webAuth(via: AuthCliCommands) {
 
   try {
     spinner.start();
-    await setTimeout(() => {
-      open(urlStr);
-    }, 0);
+    if (!isDocker()) {
+      await setTimeout(() => {
+        open(urlStr);
+      }, 0);
+    }
 
     return await testAuthComplete(token, ipFamily);
   } finally {
@@ -179,16 +172,36 @@ function errorForFailedAuthAttempt(res, body) {
 }
 
 async function getIpFamily(): Promise<6 | undefined> {
-  const IPv6Family = 6;
-
+  const family = 6;
   try {
-    const { address } = await dnsLookupPromise(apiUrl.hostname!, {
-      family: IPv6Family,
+    // Dispatch a FORCED IPv6 request to test client's ISP and network capability
+    await request({
+      url: config.API + '/verify/callback',
+      family, // family param forces the handler to dispatch a request using IP at "family" version
+      method: 'post',
     });
-    const res = parse(address) as IPv6;
-    return !res.isIPv4MappedAddress() ? IPv6Family : undefined;
+    return family;
   } catch (e) {
-    /* IPv6 is not enabled */
     return undefined;
+  }
+}
+
+function browserAuthPrompt(isDocker: boolean, urlStr: string): string {
+  if (isDocker) {
+    return (
+      '\nTo authenticate your account, open the below URL in your browser.\n' +
+      'After your authentication is complete, return to this prompt to ' +
+      'start using Snyk.\n\n' +
+      urlStr +
+      '\n'
+    );
+  } else {
+    return (
+      '\nNow redirecting you to our auth page, go ahead and log in,\n' +
+      "and once the auth is complete, return to this prompt and you'll\n" +
+      "be ready to start using snyk.\n\nIf you can't wait use this url:\n" +
+      urlStr +
+      '\n'
+    );
   }
 }

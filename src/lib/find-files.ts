@@ -1,9 +1,10 @@
 import * as fs from 'fs';
 import * as pathLib from 'path';
-import * as _ from '@snyk/lodash';
+const sortBy = require('lodash.sortby');
+const groupBy = require('lodash.groupby');
 import { detectPackageManagerFromFile } from './detect';
 import * as debugModule from 'debug';
-const debug = debugModule('snyk');
+const debug = debugModule('snyk:find-files');
 
 // TODO: use util.promisify once we move to node 8
 
@@ -39,6 +40,11 @@ export async function getStats(path: string): Promise<fs.Stats> {
   });
 }
 
+interface FindFilesRes {
+  files: string[];
+  allFilesFound: string[];
+}
+
 /**
  * Find all files in given search path. Returns paths to files found.
  *
@@ -51,12 +57,14 @@ export async function find(
   path: string,
   ignore: string[] = [],
   filter: string[] = [],
-  levelsDeep = 2,
-): Promise<string[]> {
+  levelsDeep = 4,
+): Promise<FindFilesRes> {
   const found: string[] = [];
+  const foundAll: string[] = [];
+
   // ensure we ignore find against node_modules path.
   if (path.endsWith('node_modules')) {
-    return found;
+    return { files: found, allFilesFound: foundAll };
   }
   // ensure node_modules is always ignored
   if (!ignore.includes('node_modules')) {
@@ -64,21 +72,36 @@ export async function find(
   }
   try {
     if (levelsDeep < 0) {
-      return found;
+      return { files: found, allFilesFound: foundAll };
     } else {
       levelsDeep--;
     }
     const fileStats = await getStats(path);
     if (fileStats.isDirectory()) {
-      const files = await findInDirectory(path, ignore, filter, levelsDeep);
+      const { files, allFilesFound } = await findInDirectory(
+        path,
+        ignore,
+        filter,
+        levelsDeep,
+      );
       found.push(...files);
+      foundAll.push(...allFilesFound);
     } else if (fileStats.isFile()) {
       const fileFound = findFile(path, filter);
       if (fileFound) {
         found.push(fileFound);
+        foundAll.push(fileFound);
       }
     }
-    return filterForDefaultManifests(found);
+    const filteredOutFiles = foundAll.filter((f) => !found.includes(f));
+    if (filteredOutFiles.length) {
+      debug(
+        `Filtered out ${filteredOutFiles.length}/${
+          foundAll.length
+        } files: ${filteredOutFiles.join(', ')}`,
+      );
+    }
+    return { files: filterForDefaultManifests(found), allFilesFound: foundAll };
   } catch (err) {
     throw new Error(`Error finding files in path '${path}'.\n${err.message}`);
   }
@@ -100,20 +123,34 @@ async function findInDirectory(
   path: string,
   ignore: string[] = [],
   filter: string[] = [],
-  levelsDeep = 2,
-): Promise<string[]> {
+  levelsDeep = 4,
+): Promise<FindFilesRes> {
   const files = await readDirectory(path);
   const toFind = files
     .filter((file) => !ignore.includes(file))
     .map((file) => {
       const resolvedPath = pathLib.resolve(path, file);
+      if (!fs.existsSync(resolvedPath)) {
+        debug('File does not seem to exist, skipping: ', file);
+        return { files: [], allFilesFound: [] };
+      }
       return find(resolvedPath, ignore, filter, levelsDeep);
     });
+
   const found = await Promise.all(toFind);
-  return Array.prototype.concat.apply([], found);
+  return {
+    files: Array.prototype.concat.apply(
+      [],
+      found.map((f) => f.files),
+    ),
+    allFilesFound: Array.prototype.concat.apply(
+      [],
+      found.map((f) => f.allFilesFound),
+    ),
+  };
 }
 
-function filterForDefaultManifests(files: string[]) {
+function filterForDefaultManifests(files: string[]): string[] {
   // take all the files in the same dir & filter out
   // based on package Manager
   if (files.length <= 1) {
@@ -122,30 +159,35 @@ function filterForDefaultManifests(files: string[]) {
 
   const filteredFiles: string[] = [];
 
-  const foundFiles = _(files)
+  const beforeSort = files
     .filter(Boolean)
+    .filter((p) => fs.existsSync(p))
     .map((p) => ({
       path: p,
       ...pathLib.parse(p),
       packageManager: detectProjectTypeFromFile(p),
-    }))
-    .groupBy('dir')
-    .value();
+    }));
+  const sorted = sortBy(beforeSort, 'dir');
+  const foundFiles = groupBy(sorted, 'dir');
 
   for (const directory of Object.keys(foundFiles)) {
     const filesInDirectory = foundFiles[directory];
-    if (filesInDirectory.length <= 1) {
-      filteredFiles.push(filesInDirectory[0].path);
-      continue;
-    }
+    const beforeGroup = filesInDirectory.filter((p) => !!p.packageManager);
 
-    const groupedFiles = _(filesInDirectory)
-      .groupBy('packageManager')
-      .value();
+    const groupedFiles = groupBy(beforeGroup, 'packageManager');
 
     for (const packageManager of Object.keys(groupedFiles)) {
       const filesPerPackageManager = groupedFiles[packageManager];
+
       if (filesPerPackageManager.length <= 1) {
+        const shouldSkip = shouldSkipAddingFile(
+          packageManager,
+          filesPerPackageManager[0].path,
+          filteredFiles,
+        );
+        if (shouldSkip) {
+          continue;
+        }
         filteredFiles.push(filesPerPackageManager[0].path);
         continue;
       }
@@ -154,6 +196,14 @@ function filterForDefaultManifests(files: string[]) {
         packageManager,
       );
       if (defaultManifestFileName) {
+        const shouldSkip = shouldSkipAddingFile(
+          packageManager,
+          filesPerPackageManager[0].path,
+          filteredFiles,
+        );
+        if (shouldSkip) {
+          continue;
+        }
         filteredFiles.push(defaultManifestFileName);
       }
     }
@@ -173,6 +223,28 @@ function detectProjectTypeFromFile(file: string): string | null {
   }
 }
 
+function shouldSkipAddingFile(
+  packageManager: string,
+  filePath: string,
+  filteredFiles: string[],
+): boolean {
+  if (['gradle'].includes(packageManager) && filePath) {
+    const rootGradleFile = filteredFiles
+      .filter(
+        (targetFile) =>
+          targetFile.endsWith('build.gradle') ||
+          targetFile.endsWith('build.gradle.kts'),
+      )
+      .filter((targetFile) => {
+        const parsedPath = pathLib.parse(targetFile);
+        const relativePath = pathLib.relative(parsedPath.dir, filePath);
+        return !relativePath.startsWith(`..${pathLib.sep}`);
+      });
+    return !!rootGradleFile.length;
+  }
+  return false;
+}
+
 function chooseBestManifest(
   files: Array<{ base: string; path: string }>,
   projectType: string,
@@ -182,43 +254,72 @@ function chooseBestManifest(
       const lockFile = files.filter((path) =>
         ['package-lock.json', 'yarn.lock'].includes(path.base),
       )[0];
+      debug(
+        `Encountered multiple node lockfiles files, defaulting to ${lockFile.path}`,
+      );
       if (lockFile) {
-        debug(
-          'Encountered multiple npm manifest files, defaulting to package-lock.json / yarn.lock',
-        );
         return lockFile.path;
       }
       const packageJson = files.filter((path) =>
         ['package.json'].includes(path.base),
       )[0];
       debug(
-        'Encountered multiple npm manifest files, defaulting to package.json',
+        `Encountered multiple npm manifest files, defaulting to ${packageJson.path}`,
       );
       return packageJson.path;
     }
     case 'rubygems': {
-      debug(
-        'Encountered multiple gem manifest files, defaulting to Gemfile.lock',
-      );
       const defaultManifest = files.filter((path) =>
         ['Gemfile.lock'].includes(path.base),
       )[0];
+      debug(
+        `Encountered multiple gem manifest files, defaulting to ${defaultManifest.path}`,
+      );
       return defaultManifest.path;
     }
     case 'cocoapods': {
-      debug(
-        'Encountered multiple cocoapod manifest files, defaulting to Podfile',
-      );
       const defaultManifest = files.filter((path) =>
         ['Podfile'].includes(path.base),
       )[0];
+      debug(
+        `Encountered multiple cocoapods manifest files, defaulting to ${defaultManifest.path}`,
+      );
       return defaultManifest.path;
     }
     case 'pip': {
-      debug('Encountered multiple pip manifest files, defaulting to Pipfile');
       const defaultManifest = files.filter((path) =>
         ['Pipfile'].includes(path.base),
       )[0];
+      debug(
+        `Encountered multiple pip manifest files, defaulting to ${defaultManifest.path}`,
+      );
+      return defaultManifest.path;
+    }
+    case 'gradle': {
+      const defaultManifest = files.filter((path) =>
+        ['build.gradle'].includes(path.base),
+      )[0];
+      debug(
+        `Encountered multiple gradle manifest files, defaulting to ${defaultManifest.path}`,
+      );
+      return defaultManifest.path;
+    }
+    case 'poetry': {
+      const defaultManifest = files.filter((path) =>
+        ['pyproject.toml'].includes(path.base),
+      )[0];
+      debug(
+        `Encountered multiple poetry manifest files, defaulting to ${defaultManifest.path}`,
+      );
+      return defaultManifest.path;
+    }
+    case 'hex': {
+      const defaultManifest = files.filter((path) =>
+        ['mix.exs'].includes(path.base),
+      )[0];
+      debug(
+        `Encountered multiple hex manifest files, defaulting to ${defaultManifest.path}`,
+      );
       return defaultManifest.path;
     }
     default: {

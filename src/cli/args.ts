@@ -3,6 +3,12 @@ import { MethodResult } from './commands/types';
 
 import debugModule = require('debug');
 import { parseMode, displayModeHelp } from './modes';
+import {
+  SupportedCliCommands,
+  SupportedUserReachableFacingCliArgs,
+} from '../lib/types';
+import { getContainerImageSavePath } from '../lib/container';
+import { obfuscateArgs } from '../lib/utils';
 
 export declare interface Global extends NodeJS.Global {
   ignoreUnknownCA: boolean;
@@ -21,16 +27,27 @@ const alias = abbrev(
 );
 alias.d = 'debug'; // always make `-d` debug
 alias.t = 'test';
+alias.p = 'prune-repeated-subdependencies';
 
 // The -d flag enables printing the messages for predefined namespaces.
 // Additional ones can be specified (comma-separated) in the DEBUG environment variable.
 const DEBUG_DEFAULT_NAMESPACES = [
   'snyk-test',
   'snyk',
+  'snyk:find-files',
+  'snyk:run-test',
+  'snyk:prune',
+  'snyk-nodejs-plugin',
   'snyk-gradle-plugin',
   'snyk-sbt-plugin',
   'snyk-mvn-plugin',
+  'snyk-yarn-workspaces',
+  'snyk-java-call-graph-builder',
 ];
+
+// NOTE[muscar] This is accepted in seconds for UX reasons, the maven plugin
+// turns it into milliseconds before calling the call graph generator
+const REACHABLE_VULNS_TIMEOUT = 5 * 60; // 5 min (in seconds)
 
 function dashToCamelCase(dash) {
   return dash.indexOf('-') < 0
@@ -52,7 +69,7 @@ export interface ArgsOptions {
   // (see the snyk-mvn-plugin or snyk-gradle-plugin)
   _doubleDashArgs: string[];
   _: MethodArgs;
-  [key: string]: boolean | string | MethodArgs | string[]; // The two last types are for compatibility only
+  [key: string]: boolean | string | number | MethodArgs | string[]; // The two last types are for compatibility only
 }
 
 export function args(rawArgv: string[]): Args {
@@ -132,11 +149,17 @@ export function args(rawArgv: string[]): Args {
     if (argv.help === true || command === 'help') {
       argv.help = 'help';
     }
-    command = 'help';
 
+    // If command has a value prior to running it over with “help” and argv.help contains "help", save the command in argv._
+    // so that no argument gets deleted or ignored. This ensures `snyk --help [command]` and `snyk [command] --help` return the
+    // specific help page instead of the generic one.
+    // This change also covers the scenario of 'snyk [mode] [command] --help' and 'snyk --help [mode] [command]`.
     if (!argv._.length) {
-      argv._.unshift((argv.help as string) || 'help');
+      command && argv.help === 'help'
+        ? argv._.unshift(command)
+        : argv._.unshift((argv.help as string) || 'help');
     }
+    command = 'help';
   }
 
   if (command && command.indexOf('config:') === 0) {
@@ -157,19 +180,22 @@ export function args(rawArgv: string[]): Args {
     argv._.push(command);
   }
 
-  // TODO decide why we can't do this cart blanche...
-  if (
-    ['protect', 'test', 'monitor', 'wizard', 'ignore', 'woof'].indexOf(
-      command,
-    ) !== -1
-  ) {
+  // TODO: Once experimental flag became default this block should be
+  // moved to inside the parseModes function for container mode
+  const imageSavePath = getContainerImageSavePath();
+  if (imageSavePath) {
+    argv['imageSavePath'] = imageSavePath;
+  }
+
+  if (command in SupportedCliCommands) {
     // copy all the options across to argv._ as an object
     argv._.push(argv);
   }
 
-  // arguments that needs transformation from dash-case to camelCase
-  // should be added here
-  for (const dashedArg of [
+  // TODO: eventually all arguments should be transformed like this.
+  const argumentsToTransform: Array<Partial<
+    SupportedUserReachableFacingCliArgs
+  >> = [
     'package-manager',
     'packages-folder',
     'severity-threshold',
@@ -181,14 +207,31 @@ export function args(rawArgv: string[]): Args {
     'scan-all-unmanaged',
     'fail-on',
     'all-projects',
+    'yarn-workspaces',
     'detection-depth',
+    'reachable',
     'reachable-vulns',
-  ]) {
+    'reachable-timeout',
+    'reachable-vulns-timeout',
+    'init-script',
+    'integration-name',
+    'integration-version',
+    'prune-repeated-subdependencies',
+    'dry-run',
+  ];
+  for (const dashedArg of argumentsToTransform) {
     if (argv[dashedArg]) {
       const camelCased = dashToCamelCase(dashedArg);
+      if (camelCased === dashedArg) {
+        continue;
+      }
       argv[camelCased] = argv[dashedArg];
       delete argv[dashedArg];
     }
+  }
+
+  if (argv.detectionDepth !== undefined) {
+    argv.detectionDepth = Number(argv.detectionDepth);
   }
 
   if (argv.skipUnresolved !== undefined) {
@@ -207,10 +250,21 @@ export function args(rawArgv: string[]): Args {
     }
   }
 
+  if (
+    (argv.reachableVulns || argv.reachable) &&
+    argv.reachableTimeout === undefined &&
+    argv.reachableVulnsTimeout === undefined
+  ) {
+    argv.reachableVulnsTimeout = REACHABLE_VULNS_TIMEOUT.toString();
+  }
+
   // Alias
   const aliases = {
     gradleSubProject: 'subProject',
     container: 'docker',
+    reachable: 'reachableVulns',
+    reachableTimeout: 'callGraphBuilderTimeout',
+    reachableVulnsTimeout: 'callGraphBuilderTimeout',
   };
   for (const argAlias in aliases) {
     if (argv[argAlias]) {
@@ -224,7 +278,7 @@ export function args(rawArgv: string[]): Args {
     global.ignoreUnknownCA = true;
   }
 
-  debug(command, argv);
+  debug(command, obfuscateArgs(argv));
 
   return {
     command,

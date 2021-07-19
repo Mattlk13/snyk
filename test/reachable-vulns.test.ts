@@ -2,114 +2,25 @@ import { test } from 'tap';
 import * as sinon from 'sinon';
 
 import {
-  formatReachability,
-  summariseReachableVulns,
-  getReachabilityText,
-} from '../src/cli/commands/test/formatters/format-reachability';
-import { AnnotatedIssue, REACHABILITY } from '../src/lib/snyk-test/legacy';
-import {
   serializeCallGraphWithMetrics,
   validatePayload,
 } from '../src/lib/reachable-vulns';
 import {
   SUPPORTED_PACKAGE_MANAGER_NAME,
+  REACHABLE_VULNS_SUPPORTED_PACKAGE_MANAGERS,
   SupportedPackageManagers,
 } from '../src/lib/package-managers';
 import * as featureFlags from '../src/lib/feature-flags';
 import * as utils from './utils';
 
-test('output formatting', (t) => {
-  t.equal(formatReachability(REACHABILITY.FUNCTION), '[Likely reachable]');
-  t.equal(formatReachability(REACHABILITY.PACKAGE), '');
-  t.equal(formatReachability(REACHABILITY.UNREACHABLE), '[Likely unreachable]');
-  t.equal(formatReachability(REACHABILITY.NO_INFO), '');
-  t.equal(formatReachability(undefined), '');
-  t.end();
-});
-
-test('reachable text', (t) => {
-  t.equal(getReachabilityText(REACHABILITY.FUNCTION), 'Likely reachable');
-  t.equal(getReachabilityText(REACHABILITY.PACKAGE), '');
-  t.equal(getReachabilityText(REACHABILITY.UNREACHABLE), 'Likely unreachable');
-  t.equal(getReachabilityText(REACHABILITY.NO_INFO), '');
-  t.equal(getReachabilityText(undefined), '');
-  t.end();
-});
-
-test('formatReachabilitySummaryText', (t) => {
-  const noReachabilityMetadata = {} as AnnotatedIssue;
-  const noInfoVuln = { reachability: REACHABILITY.NO_INFO } as AnnotatedIssue;
-  const unreachableVuln = {
-    reachability: REACHABILITY.UNREACHABLE,
-  } as AnnotatedIssue;
-  const reachableByPackageVuln = {
-    reachability: REACHABILITY.PACKAGE,
-  } as AnnotatedIssue;
-  const reachableByFunctionVuln = {
-    reachability: REACHABILITY.FUNCTION,
-  } as AnnotatedIssue;
-
-  t.equal(
-    summariseReachableVulns([]),
-    '',
-    'no vulnerabilities should not display anything',
-  );
-
-  t.equal(
-    summariseReachableVulns([noReachabilityMetadata]),
-    '',
-    'no reachability metadata should not display anything',
-  );
-
-  t.equal(
-    summariseReachableVulns([noInfoVuln]),
-    '',
-    'no info should not display anything',
-  );
-
-  t.equal(
-    summariseReachableVulns([unreachableVuln]),
-    '',
-    'unreachable is not implemented yet, should not display anything',
-  );
-
-  t.equal(
-    summariseReachableVulns([reachableByPackageVuln]),
-    '',
-    'package is not implemented yet, should not display anything',
-  );
-
-  t.equal(
-    summariseReachableVulns([reachableByFunctionVuln]),
-    'In addition, found 1 vulnerability with a reachable path.',
-    'one reachable function summary text',
-  );
-
-  t.equal(
-    summariseReachableVulns([reachableByFunctionVuln, reachableByFunctionVuln]),
-    'In addition, found 2 vulnerabilities with a reachable path.',
-    'two reachable functions summary text',
-  );
-
-  t.equal(
-    summariseReachableVulns([
-      reachableByFunctionVuln,
-      reachableByFunctionVuln,
-      reachableByPackageVuln,
-      noInfoVuln,
-    ]),
-    'In addition, found 2 vulnerabilities with a reachable path.',
-    'two reachable functions and no info one, should count only the function reachable once',
-  );
-
-  t.end();
-});
-
 test('validatePayload - not supported package manager', async (t) => {
-  const pkgManagers = Object.keys(SUPPORTED_PACKAGE_MANAGER_NAME);
-  const mavenIndex = pkgManagers.indexOf('maven');
-  pkgManagers.splice(mavenIndex, 1); // remove maven as it's supported
-  t.plan(pkgManagers.length * 2);
+  const pkgManagers = Object.keys(SUPPORTED_PACKAGE_MANAGER_NAME).filter(
+    (name) =>
+      !REACHABLE_VULNS_SUPPORTED_PACKAGE_MANAGERS.includes(
+        name as SupportedPackageManagers,
+      ),
+  );
+  t.plan(pkgManagers.length * 3);
 
   for (const pkgManager of pkgManagers) {
     try {
@@ -123,6 +34,11 @@ test('validatePayload - not supported package manager', async (t) => {
       t.equal(
         err.message,
         `Unsupported package manager ${pkgManager} for Reachable vulns.`,
+        'correct error message',
+      );
+      t.equal(
+        err.userMessage,
+        `'Reachable vulns' is not supported for package manager '${pkgManager}'. For a list of supported package managers go to https://support.snyk.io/hc/en-us/articles/360010554837-Reachable-Vulnerabilities`,
         'correct error message',
       );
       t.equal(err.code, 422, 'correct error code');

@@ -5,10 +5,11 @@ const now = new Date();
 const debug = require('debug')('snyk');
 const chalk = require('chalk');
 const glob = require('glob');
-const tempfile = require('tempfile');
-const fs = require('then-fs');
+const tempy = require('tempy');
+const fs = require('fs');
 const path = require('path');
-const _ = require('@snyk/lodash');
+const flatten = require('lodash.flatten');
+const cloneDeep = require('lodash.clonedeep');
 const applyPatch = require('./apply-patch');
 const stripVersions = require('./strip-versions');
 const getVulnSource = require('./get-vuln-source');
@@ -60,16 +61,17 @@ function patch(vulns, live) {
 
             // get the patches on the local fs
             const promises = patches.urls.map((url) => {
-              const filename = tempfile('.' + fileSafeId + '.snyk-patch');
+              const filename = tempy.file({
+                extension: '.' + fileSafeId + '.snyk-patch',
+              });
               return getPatchFile(url, filename)
                 .then((patch) => {
                   // check whether there's a trace of us having patched before
-                  return fs
-                    .exists(flag)
+                  return Promise.resolve(fs.existsSync(flag))
                     .then((exists) => {
                       // if the file doesn't exist, look for the old style filename
                       // in case and for backwards compatability
-                      return exists || fs.exists(oldFlag);
+                      return exists || fs.existsSync(oldFlag);
                     })
                     .then((exists) => {
                       if (!exists) {
@@ -150,7 +152,7 @@ function patch(vulns, live) {
 
         const promise = promises
           .then((res) => {
-            const patched = _.flatten(res).filter(Boolean);
+            const patched = flatten(res).filter(Boolean);
 
             if (!live) {
               debug('[skipping - dry run]');
@@ -170,7 +172,7 @@ function patch(vulns, live) {
               const vuln = patched[i];
               if (vuln.grouped && vuln.grouped.includes) {
                 vuln.grouped.includes.forEach((id) => {
-                  const rule = _.cloneDeep(curr);
+                  const rule = cloneDeep(curr);
                   rule.vulnId = id;
                   acc.push(rule);
                 });

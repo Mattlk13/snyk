@@ -187,8 +187,24 @@ export const YarnTests: AcceptanceTests = {
         'depGraph looks fine',
       );
     },
-
-    '`test yarn-package --file=yarn.lock ` sends pkg info': (
+    '`test yarn-package --file=yarn-package/yarn.lock ` sends pkg info & policy': (
+      params,
+      utils,
+    ) => async (t) => {
+      utils.chdirWorkspaces();
+      await params.cli.test({ file: 'yarn-package/yarn.lock' });
+      const req = params.server.popRequest();
+      t.match(req.url, '/test-dep-graph', 'posts to correct url');
+      t.match(req.body.policy, 'npm:debug:20170905', 'policy is found & sent');
+      t.match(req.body.targetFile, undefined, 'target is undefined');
+      const depGraph = req.body.depGraph;
+      t.same(
+        depGraph.pkgs.map((p) => p.id).sort(),
+        ['npm-package@1.0.0', 'ms@0.7.1', 'debug@2.2.0'].sort(),
+        'depGraph looks fine',
+      );
+    },
+    '`test yarn-package --file=yarn.lock ` sends pkg info & policy': (
       params,
       utils,
     ) => async (t) => {
@@ -196,6 +212,23 @@ export const YarnTests: AcceptanceTests = {
       await params.cli.test('yarn-package', { file: 'yarn.lock' });
       const req = params.server.popRequest();
       t.match(req.url, '/test-dep-graph', 'posts to correct url');
+      t.match(req.body.policy, 'npm:debug:20170905', 'policy is found & sent');
+      t.match(req.body.targetFile, undefined, 'target is undefined');
+      const depGraph = req.body.depGraph;
+      t.same(
+        depGraph.pkgs.map((p) => p.id).sort(),
+        ['npm-package@1.0.0', 'ms@0.7.1', 'debug@2.2.0'].sort(),
+        'depGraph looks fine',
+      );
+    },
+    '`test yarn-package` sends pkg info & policy': (params, utils) => async (
+      t,
+    ) => {
+      utils.chdirWorkspaces('yarn-package');
+      await params.cli.test();
+      const req = params.server.popRequest();
+      t.match(req.url, '/test-dep-graph', 'posts to correct url');
+      t.match(req.body.policy, 'npm:debug:20170905', 'policy is found & sent');
       t.match(req.body.targetFile, undefined, 'target is undefined');
       const depGraph = req.body.depGraph;
       t.same(
@@ -280,6 +313,25 @@ export const YarnTests: AcceptanceTests = {
       t.same(
         depGraph.pkgs.map((p) => p.id).sort(),
         ['yarn-app-one@1.0.0', 'marked@0.3.6', 'moment@2.18.1'].sort(),
+        'depGraph looks fine',
+      );
+    },
+    '`test` on a yarn v2 package': (params, utils) => async (t) => {
+      utils.chdirWorkspaces('yarn-v2');
+      await params.cli.test();
+      const req = params.server.popRequest();
+      t.equal(req.method, 'POST', 'makes POST request');
+      t.equal(
+        req.headers['x-snyk-cli-version'],
+        params.versionNumber,
+        'sends version number',
+      );
+      t.match(req.url, '/test-dep-graph', 'posts to correct url');
+      t.match(req.body.targetFile, undefined, 'target is undefined');
+      const depGraph = req.body.depGraph;
+      t.same(
+        depGraph.pkgs.map((p) => p.id).sort(),
+        ['yarn-v2@1.0.0', 'lodash@4.17.0'].sort(),
         'depGraph looks fine',
       );
     },

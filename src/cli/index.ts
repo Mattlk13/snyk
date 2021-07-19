@@ -3,13 +3,19 @@ import 'source-map-support/register';
 import * as Debug from 'debug';
 import * as pathLib from 'path';
 
+// import args as a first internal module
+import { args as argsLib, Args, ArgsOptions } from './args';
+// parse args as a first thing; argsLib modifies global namespace
+// therefore it is better to do it as a first thing to prevent bugs
+// when modules use this global setting during their require phase
+// TODO(code): remove once https://app.stepsize.com/issue/c2f6253e-7240-436f-943c-23a897558156/2-http-libraries-in-cli is solved
+const globalArgs = argsLib(process.argv);
 // assert supported node runtime version
 import * as runtime from './runtime';
 // require analytics as soon as possible to start measuring execution time
 import * as analytics from '../lib/analytics';
 import * as alerts from '../lib/alerts';
 import * as sln from '../lib/sln';
-import { args as argsLib, Args } from './args';
 import { TestCommandResult } from './commands/types';
 import { copy } from './copy';
 import spinner = require('../lib/spinner');
@@ -20,30 +26,38 @@ import { updateCheck } from '../lib/updater';
 import {
   MissingTargetFileError,
   FileFlagBadInputError,
-  OptionMissingErrorError,
+  MissingOptionError,
   UnsupportedOptionCombinationError,
   ExcludeFlagBadInputError,
+  CustomError,
 } from '../lib/errors';
 import stripAnsi from 'strip-ansi';
 import { ExcludeFlagInvalidInputError } from '../lib/errors/exclude-flag-invalid-input';
 import { modeValidation } from './modes';
 import { JsonFileOutputBadInputError } from '../lib/errors/json-file-output-bad-input-error';
+import { saveJsonToFileCreatingDirectoryIfRequired } from '../lib/json-file-output';
 import {
-  createDirectory,
-  writeContentsToFileSwallowingErrors,
-} from '../lib/json-file-output';
+  Options,
+  TestOptions,
+  MonitorOptions,
+  SupportedUserReachableFacingCliArgs,
+} from '../lib/types';
+import { SarifFileOutputEmptyError } from '../lib/errors/empty-sarif-output-error';
+import { InvalidDetectionDepthValue } from '../lib/errors/invalid-detection-depth-value';
+import { obfuscateArgs } from '../lib/utils';
 
 const debug = Debug('snyk');
 const EXIT_CODES = {
   VULNS_FOUND: 1,
   ERROR: 2,
+  NO_SUPPORTED_MANIFESTS_FOUND: 3,
 };
 
 async function runCommand(args: Args) {
   const commandResult = await args.method(...args.options._);
 
-  const res = analytics({
-    args: args.options._,
+  const res = analytics.addDataAndSend({
+    args: obfuscateArgs(args.options._),
     command: args.command,
     org: args.options.org,
   });
@@ -65,15 +79,10 @@ async function runCommand(args: Args) {
 
   // also save the json (in error.json) to file if option is set
   if (args.command === 'test') {
-    const jsonOutputFile = args.options['json-file-output'];
-    if (jsonOutputFile) {
-      const jsonOutputFileStr = jsonOutputFile as string;
-      const fullOutputFilePath = getFullPath(jsonOutputFileStr);
-      saveJsonResultsToFile(
-        stripAnsi((commandResult as TestCommandResult).getJsonResult()),
-        fullOutputFilePath,
-      );
-    }
+    const jsonResults = (commandResult as TestCommandResult).getJsonResult();
+    await saveResultsToFile(args.options, 'json', jsonResults);
+    const sarifResults = (commandResult as TestCommandResult).getSarifResult();
+    await saveResultsToFile(args.options, 'sarif', sarifResults);
   }
 
   return res;
@@ -83,6 +92,13 @@ async function handleError(args, error) {
   spinner.clearAll();
   let command = 'bad-command';
   let exitCode = EXIT_CODES.ERROR;
+  const noSupportedManifestsFound = error.message?.includes(
+    'Could not detect supported target files in',
+  );
+
+  if (noSupportedManifestsFound) {
+    exitCode = EXIT_CODES.NO_SUPPORTED_MANIFESTS_FOUND;
+  }
 
   const vulnsFound = error.code === 'VULNS';
   if (vulnsFound) {
@@ -94,8 +110,14 @@ async function handleError(args, error) {
   if (args.options.debug && !args.options.json) {
     const output = vulnsFound ? error.message : error.stack;
     console.log(output);
-  } else if (args.options.json) {
-    console.log(stripAnsi(error.json || error.stack));
+  } else if (
+    args.options.json &&
+    !(error instanceof UnsupportedOptionCombinationError)
+  ) {
+    const output = vulnsFound
+      ? error.message
+      : stripAnsi(error.json || error.stack);
+    console.log(output);
   } else {
     if (!args.options.quiet) {
       const result = errors.message(error);
@@ -113,15 +135,8 @@ async function handleError(args, error) {
     }
   }
 
-  // also save the json (in error.json) to file if `--json-file-output` option is set
-  const jsonOutputFile = args.options['json-file-output'];
-  if (jsonOutputFile && error.jsonStringifiedResults) {
-    const fullOutputFilePath = getFullPath(jsonOutputFile);
-    saveJsonResultsToFile(
-      stripAnsi(error.jsonStringifiedResults),
-      fullOutputFilePath,
-    );
-  }
+  await saveResultsToFile(args.options, 'json', error.jsonStringifiedResults);
+  await saveResultsToFile(args.options, 'sarif', error.sarifStringifiedResults);
 
   const analyticsError = vulnsFound
     ? {
@@ -145,11 +160,12 @@ async function handleError(args, error) {
     // (see https://nodejs.org/api/errors.html#errors_error_stack)
     analytics.add('error', analyticsError.stack);
     analytics.add('error-code', error.code);
+    analytics.add('error-str-code', error.strCode);
     analytics.add('command', args.command);
   }
 
-  const res = analytics({
-    args: args.options._,
+  const res = analytics.addDataAndSend({
+    args: obfuscateArgs(args.options._),
     command,
     org: args.options.org,
   });
@@ -166,7 +182,7 @@ function getFullPath(filepathFragment: string): string {
   }
 }
 
-function saveJsonResultsToFile(
+async function saveJsonResultsToFile(
   stringifiedJson: string,
   jsonOutputFile: string,
 ) {
@@ -180,21 +196,21 @@ function saveJsonResultsToFile(
     return;
   }
 
-  // create the directory if it doesn't exist
-  const dirPath = pathLib.dirname(jsonOutputFile);
-  const createDirSuccess = createDirectory(dirPath);
-  if (createDirSuccess) {
-    writeContentsToFileSwallowingErrors(jsonOutputFile, stringifiedJson);
-  }
+  await saveJsonToFileCreatingDirectoryIfRequired(
+    jsonOutputFile,
+    stringifiedJson,
+  );
 }
 
 function checkRuntime() {
   if (!runtime.isSupported(process.versions.node)) {
     console.error(
-      `${process.versions.node} is an unsupported nodejs ` +
+      `Node.js version ${process.versions.node} is an unsupported Node.js ` +
         `runtime! Supported runtime range is '${runtime.supportedRange}'`,
     );
-    console.error('Please upgrade your nodejs runtime version and try again.');
+    console.error(
+      'Please upgrade your Node.js runtime. The last version of Snyk CLI that supports Node.js v8 is v1.454.0.',
+    );
     process.exit(EXIT_CODES.ERROR);
   }
 }
@@ -217,108 +233,93 @@ function checkPaths(args) {
   }
 }
 
+type AllSupportedCliOptions = Options & MonitorOptions & TestOptions;
+
 async function main() {
   updateCheck();
   checkRuntime();
 
-  const args = argsLib(process.argv);
   let res;
   let failed = false;
   let exitCode = EXIT_CODES.ERROR;
   try {
-    modeValidation(args);
+    modeValidation(globalArgs);
+    // TODO: fix this, we do transformation to options and teh type doesn't reflect it
+    validateUnsupportedOptionCombinations(
+      (globalArgs.options as unknown) as AllSupportedCliOptions,
+    );
 
-    if (args.options.scanAllUnmanaged && args.options.file) {
+    if (globalArgs.options['app-vulns'] && globalArgs.options['json']) {
       throw new UnsupportedOptionCombinationError([
-        'file',
-        'scan-all-unmanaged',
+        'Application vulnerabilities is currently not supported with JSON output. ' +
+          'Please try using —app-vulns only to get application vulnerabilities, or ' +
+          '—json only to get your image vulnerabilties, excluding the application ones.',
       ]);
     }
-
-    if (args.options['project-name'] && args.options.allProjects) {
+    if (globalArgs.options['group-issues'] && globalArgs.options['iac']) {
       throw new UnsupportedOptionCombinationError([
-        'project-name',
-        'all-projects',
+        '--group-issues is currently not supported for Snyk IaC.',
       ]);
     }
-    if (args.options.file && args.options.allProjects) {
-      throw new UnsupportedOptionCombinationError(['file', 'all-projects']);
-    }
-    if (args.options.packageManager && args.options.allProjects) {
+    if (
+      globalArgs.options['group-issues'] &&
+      !globalArgs.options['json'] &&
+      !globalArgs.options['json-file-output']
+    ) {
       throw new UnsupportedOptionCombinationError([
-        'package-manager',
-        'all-projects',
+        'JSON output is required to use --group-issues, try adding --json.',
       ]);
-    }
-    if (args.options.docker && args.options.allProjects) {
-      throw new UnsupportedOptionCombinationError(['docker', 'all-projects']);
-    }
-    if (args.options.allSubProjects && args.options.allProjects) {
-      throw new UnsupportedOptionCombinationError([
-        'all-sub-projects',
-        'all-projects',
-      ]);
-    }
-
-    if (args.options.exclude) {
-      if (typeof args.options.exclude !== 'string') {
-        throw new ExcludeFlagBadInputError();
-      }
-      if (!args.options.allProjects) {
-        throw new OptionMissingErrorError('--exclude', '--all-projects');
-      }
-      if (args.options.exclude.indexOf(pathLib.sep) > -1) {
-        throw new ExcludeFlagInvalidInputError();
-      }
     }
 
     if (
-      args.options.file &&
-      typeof args.options.file === 'string' &&
-      (args.options.file as string).match(/\.sln$/)
+      globalArgs.options.file &&
+      typeof globalArgs.options.file === 'string' &&
+      (globalArgs.options.file as string).match(/\.sln$/)
     ) {
-      if (args.options['project-name']) {
+      if (globalArgs.options['project-name']) {
         throw new UnsupportedOptionCombinationError([
           'file=*.sln',
           'project-name',
         ]);
       }
-      sln.updateArgs(args);
-    } else if (typeof args.options.file === 'boolean') {
+      sln.updateArgs(globalArgs);
+    } else if (typeof globalArgs.options.file === 'boolean') {
       throw new FileFlagBadInputError();
     }
 
-    if (args.options['json-file-output'] && args.command !== 'test') {
-      throw new UnsupportedOptionCombinationError([
-        args.command,
-        'json-file-output',
-      ]);
+    if (
+      typeof globalArgs.options.detectionDepth !== 'undefined' &&
+      (globalArgs.options.detectionDepth <= 0 ||
+        Number.isNaN(globalArgs.options.detectionDepth))
+    ) {
+      throw new InvalidDetectionDepthValue();
     }
 
-    const jsonFileOptionSet: boolean = 'json-file-output' in args.options;
-    if (jsonFileOptionSet) {
-      const jsonFileOutputValue = args.options['json-file-output'];
-      if (!jsonFileOutputValue || typeof jsonFileOutputValue !== 'string') {
-        throw new JsonFileOutputBadInputError();
-      }
-      // On Windows, seems like quotes get passed in
-      if (jsonFileOutputValue === "''" || jsonFileOutputValue === '""') {
-        throw new JsonFileOutputBadInputError();
-      }
-    }
+    validateUnsupportedSarifCombinations(globalArgs);
 
-    checkPaths(args);
+    validateOutputFile(
+      globalArgs.options,
+      'json',
+      new JsonFileOutputBadInputError(),
+    );
+    validateOutputFile(
+      globalArgs.options,
+      'sarif',
+      new SarifFileOutputEmptyError(),
+    );
 
-    res = await runCommand(args);
+    checkPaths(globalArgs);
+
+    res = await runCommand(globalArgs);
   } catch (error) {
     failed = true;
 
-    const response = await handleError(args, error);
+    const response = await handleError(globalArgs, error);
     res = response.res;
     exitCode = response.exitCode;
   }
 
-  if (!args.options.json) {
+  if (!globalArgs.options.json) {
     console.log(alerts.displayAlerts());
   }
 
@@ -339,4 +340,148 @@ const cli = main().catch((e) => {
 if (module.parent) {
   // eslint-disable-next-line id-blacklist
   module.exports = cli;
+}
+
+function validateUnsupportedOptionCombinations(
+  options: AllSupportedCliOptions,
+): void {
+  const unsupportedAllProjectsCombinations: {
+    [name: string]: SupportedUserReachableFacingCliArgs;
+  } = {
+    'project-name': 'project-name',
+    file: 'file',
+    yarnWorkspaces: 'yarn-workspaces',
+    packageManager: 'package-manager',
+    docker: 'docker',
+    allSubProjects: 'all-sub-projects',
+  };
+
+  const unsupportedYarnWorkspacesCombinations: {
+    [name: string]: SupportedUserReachableFacingCliArgs;
+  } = {
+    'project-name': 'project-name',
+    file: 'file',
+    packageManager: 'package-manager',
+    docker: 'docker',
+    allSubProjects: 'all-sub-projects',
+  };
+
+  if (options.scanAllUnmanaged && options.file) {
+    throw new UnsupportedOptionCombinationError(['file', 'scan-all-unmanaged']);
+  }
+
+  if (options.allProjects) {
+    for (const option in unsupportedAllProjectsCombinations) {
+      if (options[option]) {
+        throw new UnsupportedOptionCombinationError([
+          unsupportedAllProjectsCombinations[option],
+          'all-projects',
+        ]);
+      }
+    }
+  }
+
+  if (options.yarnWorkspaces) {
+    for (const option in unsupportedYarnWorkspacesCombinations) {
+      if (options[option]) {
+        throw new UnsupportedOptionCombinationError([
+          unsupportedAllProjectsCombinations[option],
+          'yarn-workspaces',
+        ]);
+      }
+    }
+  }
+
+  if (options.exclude) {
+    if (!(options.allProjects || options.yarnWorkspaces)) {
+      throw new MissingOptionError('--exclude', [
+        '--yarn-workspaces',
+        '--all-projects',
+      ]);
+    }
+    if (typeof options.exclude !== 'string') {
+      throw new ExcludeFlagBadInputError();
+    }
+    if (options.exclude.indexOf(pathLib.sep) > -1) {
+      throw new ExcludeFlagInvalidInputError();
+    }
+  }
+}
+
+function validateUnsupportedSarifCombinations(args) {
+  if (args.options['json-file-output'] && args.command !== 'test') {
+    throw new UnsupportedOptionCombinationError([
+      args.command,
+      'json-file-output',
+    ]);
+  }
+
+  if (args.options['sarif'] && args.command !== 'test') {
+    throw new UnsupportedOptionCombinationError([args.command, 'sarif']);
+  }
+
+  if (args.options['sarif'] && args.options['json']) {
+    throw new UnsupportedOptionCombinationError([
+      args.command,
+      'sarif',
+      'json',
+    ]);
+  }
+
+  if (args.options['sarif-file-output'] && args.command !== 'test') {
+    throw new UnsupportedOptionCombinationError([
+      args.command,
+      'sarif-file-output',
+    ]);
+  }
+
+  if (
+    args.options['sarif'] &&
+    args.options['docker'] &&
+    !args.options['file']
+  ) {
+    throw new MissingOptionError('sarif', ['--file']);
+  }
+
+  if (
+    args.options['sarif-file-output'] &&
+    args.options['docker'] &&
+    !args.options['file']
+  ) {
+    throw new MissingOptionError('sarif-file-output', ['--file']);
+  }
+}
+
+async function saveResultsToFile(
+  options: ArgsOptions,
+  outputType: string,
+  jsonResults: string,
+) {
+  const flag = `${outputType}-file-output`;
+  const outputFile = options[flag];
+  if (outputFile && jsonResults) {
+    const outputFileStr = outputFile as string;
+    const fullOutputFilePath = getFullPath(outputFileStr);
+    await saveJsonResultsToFile(stripAnsi(jsonResults), fullOutputFilePath);
+  }
+}
+
+function validateOutputFile(
+  options: ArgsOptions,
+  outputType: string,
+  error: CustomError,
+) {
+  const fileOutputValue = options[`${outputType}-file-output`];
+
+  if (fileOutputValue === undefined) {
+    return;
+  }
+
+  if (!fileOutputValue || typeof fileOutputValue !== 'string') {
+    throw error;
+  }
+  // On Windows, seems like quotes get passed in
+  if (fileOutputValue === "''" || fileOutputValue === '""') {
+    throw error;
+  }
 }

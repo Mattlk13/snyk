@@ -1,0 +1,24 @@
+name: CLI alert
+
+on:
+  schedule:
+    - cron: '0 * * * *'
+
+jobs:
+  check_tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./packages/cli-alert
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-node@v1
+        with:
+          node-version: 14
+      - run: npm install -g npm@7
+      - run: npm install
+      - run: npm start
+        env:
+          USER_GITHUB_TOKEN: ${{ secrets.USER_GITHUB_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          PD_ROUTING_KEY: ${{ secrets.PD_ROUTING_KEY }}

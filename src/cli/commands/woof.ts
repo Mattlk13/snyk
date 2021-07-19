@@ -1,22 +1,8 @@
-import { MethodArgs, ArgsOptions } from '../args';
+import { MethodArgs } from '../args';
+import getWoof from './woof/getWoof';
 
-interface WoofOptions {
-  language?: string; // ISO 639-1 code
-}
-
-const woofs = {
-  en: 'Woof!',
-  he: ' !הב ',
-  ru: ' Гав!',
-};
-
-export = function woof(...args0: MethodArgs) {
-  const args = [...args0];
-  let options: WoofOptions = {};
-  if (typeof args[args.length - 1] === 'object') {
-    options = (args.pop() as ArgsOptions) as WoofOptions;
-  }
-  const lang = options.language || 'en';
+export = function woof(...args: MethodArgs) {
+  const woof = getWoof(args);
   console.log(`
     |         |
    /|         |\\
@@ -30,7 +16,7 @@ export = function woof(...args0: MethodArgs) {
     |   | |   |
      \\  ( )  /
       \\_/ \\_/  /-----\\
-        \\U/ --( ${woofs[lang]} )
+        \\U/ --( ${woof} )
                \\-----/
 `);
 };

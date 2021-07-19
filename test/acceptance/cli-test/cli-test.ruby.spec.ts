@@ -1,5 +1,5 @@
-import * as path from 'path';
-import * as _ from '@snyk/lodash';
+const omit = require('lodash.omit');
+const sortBy = require('lodash.sortby');
 import { AcceptanceTests } from './cli-test.acceptance.test';
 import { getWorkspaceJSON } from '../workspace-helper';
 import { CommandResult } from '../../../src/cli/commands/types';
@@ -38,6 +38,134 @@ export const RubyTests: AcceptanceTests = {
       t.same(
         depGraph.pkgs.map((p) => p.id).sort(),
         ['ruby-app@', 'json@2.0.2', 'lynx@0.4.0'].sort(),
+        'depGraph looks fine',
+      );
+    },
+
+    '`test ruby-app-custom-names --file=123.gemfile.lock --package-manager=rubygems`': (
+      params,
+      utils,
+    ) => async (t) => {
+      utils.chdirWorkspaces();
+      await params.cli.test('ruby-app-custom-names', {
+        file: '123.gemfile.lock',
+        packageManager: 'rubygems',
+      });
+
+      const req = params.server.popRequest();
+      t.equal(req.method, 'POST', 'makes POST request');
+      t.equal(
+        req.headers['x-snyk-cli-version'],
+        params.versionNumber,
+        'sends version number',
+      );
+      t.match(req.url, '/test-dep-graph', 'posts to correct url');
+
+      const depGraph = req.body.depGraph;
+      t.equal(depGraph.pkgManager.name, 'rubygems');
+      t.same(
+        depGraph.pkgs.map((p) => p.id).sort(),
+        [
+          'crass@1.0.4',
+          'lynx@0.4.0',
+          'mini_portile2@2.3.0',
+          'nokogiri@1.8.5',
+          'nokogumbo@1.5.0',
+          'ruby-app-custom-names@',
+          'sanitize@4.6.2',
+          'yard@0.8.0',
+        ].sort(),
+        'depGraph looks fine',
+      );
+    },
+    '`test ruby-app-custom-names --file=123.gemfile --package-manager=rubygems`': (
+      params,
+      utils,
+    ) => async (t) => {
+      utils.chdirWorkspaces();
+      await params.cli.test('ruby-app-custom-names', {
+        file: '123.gemfile',
+        packageManager: 'rubygems',
+      });
+
+      const req = params.server.popRequest();
+      t.equal(req.method, 'POST', 'makes POST request');
+      t.equal(
+        req.headers['x-snyk-cli-version'],
+        params.versionNumber,
+        'sends version number',
+      );
+      t.match(req.url, '/test-dep-graph', 'posts to correct url');
+
+      const depGraph = req.body.depGraph;
+      t.equal(depGraph.pkgManager.name, 'rubygems');
+      t.same(
+        depGraph.pkgs.map((p) => p.id).sort(),
+        [
+          'crass@1.0.4',
+          'lynx@0.4.0',
+          'mini_portile2@2.3.0',
+          'nokogiri@1.8.5',
+          'nokogumbo@1.5.0',
+          'ruby-app-custom-names@',
+          'sanitize@4.6.2',
+          'yard@0.8.0',
+        ].sort(),
+        'depGraph looks fine',
+      );
+    },
+
+    '`test ruby-app-custom-names --file=gemfiles/Gemfile.rails-2.3.6 --package-manager=rubygems`': (
+      params,
+      utils,
+    ) => async (t) => {
+      utils.chdirWorkspaces();
+      try {
+        await params.cli.test('ruby-app-custom-names', {
+          file: 'gemfiles/Gemfile.rails-2.3.6',
+          packageManager: 'rubygems',
+        });
+      } catch (e) {
+        t.match(
+          e.message,
+          'if this is a custom file name re-run with --file=path/to/custom.gemfile.lock --package-manager=rubygems',
+        );
+      }
+    },
+
+    '`test ruby-app-custom-names --file=gemfiles/Gemfile.rails-2.4.5.lock --package-manager=rubygems`': (
+      params,
+      utils,
+    ) => async (t) => {
+      utils.chdirWorkspaces();
+      await params.cli.test('ruby-app-custom-names', {
+        file: 'gemfiles/Gemfile.rails-2.4.5.lock',
+        packageManager: 'rubygems',
+      });
+
+      const req = params.server.popRequest();
+      t.equal(req.method, 'POST', 'makes POST request');
+      t.equal(
+        req.headers['x-snyk-cli-version'],
+        params.versionNumber,
+        'sends version number',
+      );
+      t.match(req.url, '/test-dep-graph', 'posts to correct url');
+
+      const depGraph = req.body.depGraph;
+      t.equal(depGraph.pkgManager.name, 'rubygems');
+      t.same(
+        depGraph.pkgs.map((p) => p.id).sort(),
+        [
+          'crass@1.0.4',
+          'lynx@0.4.0',
+          'mini_portile2@2.3.0',
+          'nokogiri@1.8.5',
+          'nokogumbo@1.5.0',
+          'ruby-app-custom-names@',
+          'sanitize@4.6.2',
+          'yard@0.8.0',
+        ].sort(),
         'depGraph looks fine',
       );
     },
@@ -142,13 +270,13 @@ export const RubyTests: AcceptanceTests = {
         );
 
         t.deepEqual(
-          _.omit(res, ['vulnerabilities']),
-          _.omit(expected, ['vulnerabilities']),
+          omit(res, ['vulnerabilities']),
+          omit(expected, ['vulnerabilities']),
           'metadata is ok',
         );
         t.deepEqual(
-          _.sortBy(res.vulnerabilities, 'id'),
-          _.sortBy(expected.vulnerabilities, 'id'),
+          sortBy(res.vulnerabilities, 'id'),
+          sortBy(expected.vulnerabilities, 'id'),
           'vulns are the same',
         );
       }
@@ -241,13 +369,13 @@ export const RubyTests: AcceptanceTests = {
         );
 
         t.deepEqual(
-          _.omit(res, ['vulnerabilities']),
-          _.omit(expected, ['vulnerabilities']),
+          omit(res, ['vulnerabilities']),
+          omit(expected, ['vulnerabilities']),
           'metadata is ok',
         );
         t.deepEqual(
-          _.sortBy(res.vulnerabilities, 'id'),
-          _.sortBy(expected.vulnerabilities, 'id'),
+          sortBy(res.vulnerabilities, 'id'),
+          sortBy(expected.vulnerabilities, 'id'),
           'vulns are the same',
         );
       }
@@ -316,13 +444,88 @@ export const RubyTests: AcceptanceTests = {
         );
 
         t.deepEqual(
-          _.omit(res, ['vulnerabilities']),
-          _.omit(expected, ['vulnerabilities']),
+          omit(res, ['vulnerabilities']),
+          omit(expected, ['vulnerabilities']),
           'metadata is ok',
         );
         t.deepEqual(
-          _.sortBy(res.vulnerabilities, 'id'),
-          _.sortBy(expected.vulnerabilities, 'id'),
+          sortBy(res.vulnerabilities, 'id'),
+          sortBy(expected.vulnerabilities, 'id'),
+          'vulns are the same',
+        );
+      }
+    },
+
+    '`test ruby-app-thresholds --severity-threshold=critical': (
+      params,
+      utils,
+    ) => async (t) => {
+      utils.chdirWorkspaces();
+
+      params.server.setNextResponse(
+        getWorkspaceJSON(
+          'ruby-app-thresholds',
+          'test-graph-result-critical-severity.json',
+        ),
+      );
+
+      try {
+        await params.cli.test('ruby-app-thresholds', {
+          severityThreshold: 'critical',
+        });
+        t.fail('should have thrown');
+      } catch (err) {
+        const req = params.server.popRequest();
+        t.is(req.query.severityThreshold, 'critical');
+
+        const res = err.message;
+
+        t.match(
+          res,
+          'Tested 7 dependencies for known vulnerabilities, found 1 vulnerability, 2 vulnerable paths',
+          '1 vuln',
+        );
+      }
+    },
+
+    '`test ruby-app-thresholds --severity-threshold=critical --json`': (
+      params,
+      utils,
+    ) => async (t) => {
+      utils.chdirWorkspaces();
+
+      params.server.setNextResponse(
+        getWorkspaceJSON(
+          'ruby-app-thresholds',
+          'test-graph-result-critical-severity.json',
+        ),
+      );
+
+      try {
+        await params.cli.test('ruby-app-thresholds', {
+          severityThreshold: 'critical',
+          json: true,
+        });
+        t.fail('should have thrown');
+      } catch (err) {
+        const req = params.server.popRequest();
+        t.is(req.query.severityThreshold, 'critical');
+
+        const res = JSON.parse(err.message);
+
+        const expected = getWorkspaceJSON(
+          'ruby-app-thresholds',
+          'test-result-critical-severity.json',
+        );
+
+        t.deepEqual(
+          omit(res, ['vulnerabilities']),
+          omit(expected, ['vulnerabilities']),
+          'metadata is ok',
+        );
+        t.deepEqual(
+          sortBy(res.vulnerabilities, 'id'),
+          sortBy(expected.vulnerabilities, 'id'),
           'vulns are the same',
         );
       }
@@ -349,13 +552,13 @@ export const RubyTests: AcceptanceTests = {
         );
 
         t.deepEqual(
-          _.omit(res, ['vulnerabilities']),
-          _.omit(expected, ['vulnerabilities']),
+          omit(res, ['vulnerabilities']),
+          omit(expected, ['vulnerabilities']),
           'metadata is ok',
         );
         t.deepEqual(
-          _.sortBy(res.vulnerabilities, 'id'),
-          _.sortBy(expected.vulnerabilities, 'id'),
+          sortBy(res.vulnerabilities, 'id'),
+          sortBy(expected.vulnerabilities, 'id'),
           'vulns are the same',
         );
       }
@@ -387,13 +590,13 @@ export const RubyTests: AcceptanceTests = {
         );
 
         t.deepEqual(
-          _.omit(res, ['vulnerabilities']),
-          _.omit(expected, ['vulnerabilities']),
+          omit(res, ['vulnerabilities']),
+          omit(expected, ['vulnerabilities']),
           'metadata is ok',
         );
         t.deepEqual(
-          _.sortBy(res.vulnerabilities, 'id'),
-          _.sortBy(expected.vulnerabilities, 'id'),
+          sortBy(res.vulnerabilities, 'id'),
+          sortBy(expected.vulnerabilities, 'id'),
           'vulns are the same',
         );
       }
@@ -567,6 +770,20 @@ export const RubyTests: AcceptanceTests = {
           'shows err',
         );
       }
+    },
+    '`test large-mono-repo --file=bundler-app/Gemfile`': (
+      params,
+      utils,
+    ) => async (t) => {
+      utils.chdirWorkspaces();
+      const res = await params.cli.test('large-mono-repo', {
+        file: 'bundler-app/Gemfile',
+      });
+      t.match(
+        res.getDisplayResults(),
+        '--all-projects',
+        'Suggest using --all-projects',
+      );
     },
   },
 };

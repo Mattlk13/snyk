@@ -1,8 +1,7 @@
 import * as tap from 'tap';
-import * as sinon from 'sinon';
+import * as fs from 'fs';
 import * as cli from '../../../src/cli/commands';
 import { fakeServer } from '../fake-server';
-import { getVersion } from '../../../src/lib/version';
 
 const { test, only } = tap;
 (tap as any).runOnly = false; // <- for debug. set to true, and replace a test to only(..)
@@ -15,20 +14,16 @@ process.env.LOG_LEVEL = '0';
 const apiKey = '123456789';
 let oldkey;
 let oldendpoint;
-let versionNumber;
 const server = fakeServer(BASE_API, apiKey);
 const before = tap.runOnly ? only : test;
 const after = tap.runOnly ? only : test;
 
 // Should be after `process.env` setup.
-import * as plugins from '../../../src/lib/plugins/index';
 import { chdirWorkspaces } from '../workspace-helper';
 
 // @later: remove this config stuff.
 // Was copied straight from ../src/cli-server.js
 before('setup', async (t) => {
-  versionNumber = await getVersion();
-
   t.plan(3);
   let key = await cli.config('get', 'api');
   oldkey = key;
@@ -53,6 +48,33 @@ before('prime config', async (t) => {
   await cli.config('unset', 'endpoint');
   t.pass('endpoint removed');
   t.end();
+});
+
+test('`wizard` for supported package managers', async (t) => {
+  chdirWorkspaces('npm-package-no-vulns');
+  // TODO(boost): confirm that monitor is called with correct params
+  // this currently fails as fake-server is not called?
+  // const monitorSpy = sinon.stub(snykMonitor, 'monitor').callThrough();
+  const result = await cli.wizard({ file: 'package-lock.json' });
+  t.contains(
+    result,
+    'You can see a snapshot of your dependencies here',
+    'wizard saves snapshot',
+  );
+  // t.equal(monitorSpy.calledOnceWith(
+  //   'npm-package-no-vulns',
+  //   {} as MonitorMeta,
+  //   [] as ScannedProject,
+  //   {} as Options,
+  //   {} as PluginMetadata,
+  // ), true);
+  try {
+    fs.unlinkSync('./.snyk');
+  } catch (err) {
+    throw new Error(
+      'Failed to delete test/acceptance/workspaces/npm-package-no-vulns/.snyk',
+    );
+  }
 });
 
 test('`wizard` for unsupported package managers', async (t) => {
@@ -99,7 +121,7 @@ after('teardown', async (t) => {
   delete process.env.SNYK_PORT;
   t.notOk(process.env.SNYK_PORT, 'fake env values cleared');
 
-  await new Promise((resolve) => {
+  await new Promise<void>((resolve) => {
     server.close(resolve);
   });
   t.pass('server shutdown');
@@ -120,20 +142,3 @@ after('teardown', async (t) => {
     t.end();
   }
 });
-
-// fixture can be fixture path or object
-function stubDockerPluginResponse(fixture: string | object, t) {
-  const plugin = {
-    async inspect() {
-      return typeof fixture === 'object' ? fixture : require(fixture);
-    },
-  };
-  const spyPlugin = sinon.spy(plugin, 'inspect');
-  const loadPlugin = sinon.stub(plugins, 'loadPlugin');
-  loadPlugin
-    .withArgs(sinon.match.any, sinon.match({ docker: true }))
-    .returns(plugin);
-  t.teardown(loadPlugin.restore);
-
-  return spyPlugin;
-}
