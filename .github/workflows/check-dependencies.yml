@@ -1,0 +1,17 @@
+name: 'Check Dependencies'
+
+on:
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  check-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-node@v2
+        with:
+          node-version: '16.16.0'
+          cache: 'npm'
+      - run: npm ci
+      - run: npx ts-node ./scripts/check-dependencies.ts

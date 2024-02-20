@@ -38,6 +38,15 @@ export function getProjectName(
   if (isContainer(scannedProject)) {
     return getContainerProjectName(scannedProject, meta);
   }
+
+  if (meta['project-name'] && scannedProject.meta?.projectName) {
+    return scannedProject.meta.projectName;
+  }
+
+  if (scannedProject.meta?.gradleProjectName && !meta['project-name']) {
+    return scannedProject.meta.gradleProjectName;
+  }
+
   return meta['project-name'];
 }
 

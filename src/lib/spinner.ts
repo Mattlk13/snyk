@@ -1,16 +1,13 @@
 import { SpinnerOptions } from './types';
-
-export = createSpinner;
-createSpinner.isRequired = true;
-
 import debugModule = require('debug');
-const debug = debugModule('snyk:spinner');
 import { isCI } from './is-ci';
+
+const debug = debugModule('snyk:spinner');
 const spinners = {};
 let sticky = false;
 let handleExit = false;
 
-function createSpinner(label: string): Promise<void> {
+async function addSpinner(label: string): Promise<void> {
   if (!label) {
     throw new Error('spinner requires a label');
   }
@@ -23,7 +20,7 @@ function createSpinner(label: string): Promise<void> {
   return new Promise((resolve) => {
     debug('spinner: %s', label);
     spinners[label].push(
-      spinner({
+      createSpinner({
         // string: '◐◓◑◒',
         stream: sticky ? process.stdout : process.stderr,
         interval: 75,
@@ -35,11 +32,11 @@ function createSpinner(label: string): Promise<void> {
   });
 }
 
-createSpinner.sticky = (s?: any) => {
+addSpinner.sticky = (s?: any) => {
   sticky = s === undefined ? true : s;
 };
 
-createSpinner.clear = <T>(label): ((valueToPassThrough: T) => T) => {
+addSpinner.clear = <T>(label): ((valueToPassThrough: T) => T) => {
   return (res: T) => {
     if (spinners[label] === undefined) {
       // clearing a non-existend spinner is ok by default
@@ -57,15 +54,19 @@ createSpinner.clear = <T>(label): ((valueToPassThrough: T) => T) => {
   };
 };
 
-createSpinner.clearAll = () => {
+addSpinner.clearAll = () => {
   Object.keys(spinners).map((lbl) => {
-    createSpinner.clear<void>(lbl)();
+    addSpinner.clear<void>(lbl)();
   });
 };
 
-// taken from http://git.io/vWdUm and modified
-function spinner(opt: SpinnerOptions) {
-  if (module.exports.isRequired || isCI()) {
+type Spinner = {
+  clear: () => void;
+};
+
+// adapted from https://github.com/isaacs/char-spinner/blob/201fb1312e0472af3e7a044bd38d9bdf1a663b6d/spin.js
+function createSpinner(opt: SpinnerOptions): Spinner | false {
+  if (isCI()) {
     return false;
   }
   debug('creating spinner');
@@ -91,7 +92,7 @@ function spinner(opt: SpinnerOptions) {
 
   let delay = typeof opt.delay === 'number' ? opt.delay : 2;
 
-  const interval = setInterval(() => {
+  const interval = (setInterval(() => {
     if (--delay >= 0) {
       return;
     }
@@ -99,7 +100,7 @@ function spinner(opt: SpinnerOptions) {
     const c = sprite[s];
     str.write(c + ' ' + (opt.label || '') + CR);
     wrote = true;
-  }, ms);
+  }, ms) as unknown) as NodeJS.Timer;
 
   const unref = typeof opt.unref === 'boolean' ? opt.unref : true;
   if (unref && typeof interval.unref === 'function') {
@@ -116,7 +117,7 @@ function spinner(opt: SpinnerOptions) {
     });
   }
 
-  (spinner as any).clear = () => {
+  (createSpinner as any).clear = () => {
     clearInterval(interval);
     // debug('spinner cleared');
     if (sticky) {
@@ -128,6 +129,8 @@ function spinner(opt: SpinnerOptions) {
   };
 
   return {
-    clear: (spinner as any).clear,
+    clear: (createSpinner as any).clear,
   };
 }
+
+export { addSpinner as spinner };

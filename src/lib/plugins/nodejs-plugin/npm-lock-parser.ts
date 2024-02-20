@@ -1,18 +1,24 @@
 import * as baseDebug from 'debug';
 const debug = baseDebug('snyk-test');
 import * as path from 'path';
-import * as spinner from '../../spinner';
+import { spinner } from '../../spinner';
 import * as analytics from '../../analytics';
 import * as fs from 'fs';
 import * as lockFileParser from 'snyk-nodejs-lockfile-parser';
-import { PkgTree } from 'snyk-nodejs-lockfile-parser';
+import {
+  NodeLockfileVersion,
+  PkgTree,
+  InvalidUserInputError,
+  ProjectParseOptions,
+} from 'snyk-nodejs-lockfile-parser';
 import { Options } from '../types';
+import { DepGraph } from '@snyk/dep-graph';
 
 export async function parse(
   root: string,
   targetFile: string,
   options: Options,
-): Promise<PkgTree> {
+): Promise<PkgTree | DepGraph> {
   const lockFileFullPath = path.resolve(root, targetFile);
   if (!fs.existsSync(lockFileFullPath)) {
     throw new Error(
@@ -40,32 +46,108 @@ export async function parse(
     );
   }
 
-  const manifestFile = fs.readFileSync(manifestFileFullPath, 'utf-8');
-  const lockFile = fs.readFileSync(lockFileFullPath, 'utf-8');
-
   analytics.add('local', true);
   analytics.add('generating-node-dependency-tree', {
     lockFile: true,
     targetFile,
   });
-
-  const lockFileType = targetFile.endsWith('yarn.lock')
-    ? lockFileParser.LockfileType.yarn
-    : lockFileParser.LockfileType.npm;
-
   const resolveModuleSpinnerLabel = `Analyzing npm dependencies for ${lockFileFullPath}`;
   debug(resolveModuleSpinnerLabel);
+
+  const strictOutOfSync = options.strictOutOfSync !== false;
+  const lockfileVersion = lockFileParser.getLockfileVersionFromFile(
+    lockFileFullPath,
+  );
+  if (
+    lockfileVersion === NodeLockfileVersion.YarnLockV1 ||
+    lockfileVersion === NodeLockfileVersion.YarnLockV2 ||
+    lockfileVersion === NodeLockfileVersion.NpmLockV2 ||
+    lockfileVersion === NodeLockfileVersion.NpmLockV3
+  ) {
+    return await buildDepGraph(
+      root,
+      manifestFileFullPath,
+      lockFileFullPath,
+      lockfileVersion,
+      {
+        includeDevDeps: options.dev || false,
+        includeOptionalDeps: true,
+        strictOutOfSync,
+        pruneCycles: true,
+      },
+    );
+  }
+
   try {
     await spinner(resolveModuleSpinnerLabel);
-    const strictOutOfSync = options.strictOutOfSync !== false;
-    return lockFileParser.buildDepTree(
-      manifestFile,
-      lockFile,
+    return lockFileParser.buildDepTreeFromFiles(
+      root,
+      manifestFileFullPath,
+      lockFileFullPath,
       options.dev,
-      lockFileType,
       strictOutOfSync,
     );
   } finally {
-    await spinner.clear(resolveModuleSpinnerLabel);
+    await spinner.clear<void>(resolveModuleSpinnerLabel)();
   }
+}
+
+async function buildDepGraph(
+  root: string,
+  manifestFilePath: string,
+  lockfilePath: string,
+  lockfileVersion: NodeLockfileVersion,
+  options: ProjectParseOptions,
+): Promise<DepGraph> {
+  const manifestFileFullPath = path.resolve(root, manifestFilePath);
+  const lockFileFullPath = path.resolve(root, lockfilePath);
+
+  if (!fs.existsSync(manifestFileFullPath)) {
+    throw new InvalidUserInputError(
+      'Target file package.json not found at ' +
+        `location: ${manifestFileFullPath}`,
+    );
+  }
+  if (!fs.existsSync(lockFileFullPath)) {
+    throw new InvalidUserInputError(
+      'Lockfile not found at location: ' + lockFileFullPath,
+    );
+  }
+
+  const manifestFileContents = fs.readFileSync(manifestFileFullPath, 'utf-8');
+  const lockFileContents = fs.readFileSync(lockFileFullPath, 'utf-8');
+
+  switch (lockfileVersion) {
+    case NodeLockfileVersion.YarnLockV1:
+      return await lockFileParser.parseYarnLockV1Project(
+        manifestFileContents,
+        lockFileContents,
+        {
+          includeDevDeps: options.includeDevDeps,
+          includeOptionalDeps: options.includeOptionalDeps,
+          includePeerDeps: options.includePeerDeps || false,
+          pruneLevel: 'withinTopLevelDeps',
+          strictOutOfSync: options.strictOutOfSync,
+        },
+      );
+    case NodeLockfileVersion.YarnLockV2:
+      return await lockFileParser.parseYarnLockV2Project(
+        manifestFileContents,
+        lockFileContents,
+        {
+          includeDevDeps: options.includeDevDeps,
+          includeOptionalDeps: options.includeOptionalDeps,
+          pruneWithinTopLevelDeps: true,
+          strictOutOfSync: options.strictOutOfSync,
+        },
+      );
+    case NodeLockfileVersion.NpmLockV2:
+    case NodeLockfileVersion.NpmLockV3:
+      return await lockFileParser.parseNpmLockV2Project(
+        manifestFileContents,
+        lockFileContents,
+        options,
+      );
+  }
+  throw new Error('Failed to build dep graph from current project');
 }

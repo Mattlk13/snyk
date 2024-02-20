@@ -7,11 +7,33 @@ interface ModeData {
 }
 
 const modes: Record<string, ModeData> = {
+  unmanaged: {
+    allowedCommands: ['test', 'monitor'],
+    config: (args): [] => {
+      args['unmanaged'] = true;
+      return args;
+    },
+  },
   container: {
     allowedCommands: ['test', 'monitor'],
     config: (args): [] => {
       args['docker'] = true;
-      args['experimental'] = true;
+
+      return args;
+    },
+  },
+  iac: {
+    allowedCommands: ['test', 'update-exclude-policy', 'describe'],
+    config: (args): [] => {
+      args['iac'] = true;
+
+      return args;
+    },
+  },
+  code: {
+    allowedCommands: ['test'],
+    config: (args): [] => {
+      args['code'] = true;
 
       return args;
     },

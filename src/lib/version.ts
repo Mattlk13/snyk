@@ -1,50 +1,21 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { executeCommand } from './exec';
 
-const root = path.resolve(__dirname, '../..');
+export function getVersion(): string {
+  const root = path.resolve(__dirname, '../..');
 
-export function getVersion(): Promise<string> {
-  return new Promise((resolve) => {
-    const filename = path.resolve(root, 'package.json');
-    const version = require(filename).version;
+  const { version } = JSON.parse(
+    fs.readFileSync(path.join(root, 'package.json'), 'utf8'),
+  );
 
-    if (version && version !== '0.0.0') {
-      return resolve(version);
-    }
-
-    // else we're in development, give the commit out
-    // get the last commit and whether the working dir is dirty
-    const promises = [branch(), commit(), dirty()];
-
-    resolve(getBranchCommitAndDirty(promises));
-  });
+  return version;
 }
 
+/**
+ * We use pkg to create standalone builds (binaries).
+ * pkg uses `process.pkg` to identify itself at runtime so we can do the same.
+ * https://github.com/vercel/pkg
+ */
 export function isStandaloneBuild() {
-  const standalonePath = path.join(__dirname, '../', 'STANDALONE');
-  return fs.existsSync(standalonePath);
+  return 'pkg' in process;
 }
-
-async function getBranchCommitAndDirty(promises): Promise<string> {
-  try {
-    const res: string[] = await Promise.all(promises);
-    const branchName = res[0];
-    const commitStr = res[1];
-    const filesCount = res[2];
-    const dirtyCount = parseInt(filesCount, 10) || 0;
-    let curr = branchName + ': ' + commitStr;
-    if (dirtyCount !== 0) {
-      curr += ' (' + dirtyCount + ' dirty files)';
-    }
-
-    return curr;
-  } catch {
-    // handle any point where the git based lookup fails
-    return 'unknown';
-  }
-}
-
-const commit = () => executeCommand('git rev-parse HEAD', root);
-const branch = () => executeCommand('git rev-parse --abbrev-ref HEAD', root);
-const dirty = () => executeCommand('git diff --shortstat', root);

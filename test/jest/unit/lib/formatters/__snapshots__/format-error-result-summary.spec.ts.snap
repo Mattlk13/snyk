@@ -1,0 +1,13 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`summariseErrorResults Multiple test results 1`] = `
+" Failed to test 4 projects.
+Tip: Re-run in debug mode to see more information: DEBUG=*snyk* <COMMAND>
+If the issue persists contact support@snyk.io"
+`;
+
+exports[`summariseErrorResults Single test result 1`] = `
+" Failed to test 1 project.
+Tip: Re-run in debug mode to see more information: DEBUG=*snyk* <COMMAND>
+If the issue persists contact support@snyk.io"
+`;

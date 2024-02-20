@@ -1,0 +1,97 @@
+import config from '../config';
+import { isCI } from '../is-ci';
+import { makeRequest } from '../request/promise';
+import { Contributor, Options } from '../types';
+
+import { assembleQueryString } from '../../lib/snyk-test/common';
+import { getAuthHeader } from '../api-token';
+import { MonitorDependenciesResponse, ScanResult } from '../ecosystems/types';
+import {
+  ResolutionMeta,
+  ResolveAndMonitorFactsResponse,
+  ResolveFactsState,
+} from './types';
+import { delayNextStep, handleProcessingStatus } from './common';
+import {
+  generateProjectAttributes,
+  generateTags,
+} from '../../cli/commands/monitor';
+
+export async function requestMonitorPollingToken(
+  options: Options,
+  isAsync: boolean,
+  scanResult: ScanResult,
+): Promise<ResolveFactsState> {
+  if (scanResult?.target && scanResult.target['remoteUrl'] === '') {
+    scanResult.target['remoteUrl'] = scanResult.name;
+  }
+
+  const payload = {
+    method: 'PUT',
+    url: `${config.API}/monitor-dependencies`,
+    json: true,
+    headers: {
+      'x-is-ci': isCI(),
+      authorization: getAuthHeader(),
+    },
+    body: {
+      isAsync,
+      scanResult,
+      method: 'cli',
+    },
+    qs: { ...assembleQueryString(options) },
+  };
+  return await makeRequest<ResolveAndMonitorFactsResponse>(payload);
+}
+
+export async function pollingMonitorWithTokenUntilDone(
+  token: string,
+  isAsync: boolean,
+  options: Options,
+  pollInterval: number,
+  attemptsCount: number,
+  maxAttempts = Infinity,
+  resolutionMeta: ResolutionMeta | undefined,
+  contributors: Contributor[] = [],
+): Promise<MonitorDependenciesResponse> {
+  const payload = {
+    method: 'PUT',
+    url: `${config.API}/monitor-dependencies/${token}`,
+    json: true,
+    headers: {
+      'x-is-ci': isCI(),
+      authorization: getAuthHeader(),
+    },
+    qs: { ...assembleQueryString(options) },
+    body: {
+      isAsync,
+      resolutionMeta,
+      contributors,
+      method: 'cli',
+      tags: generateTags(options),
+      attributes: generateProjectAttributes(options),
+      projectName:
+        resolutionMeta?.name || options['project-name'] || config.PROJECT_NAME,
+    },
+  };
+
+  const response = await makeRequest<ResolveAndMonitorFactsResponse>(payload);
+
+  handleProcessingStatus(response);
+
+  if (response.ok && response.isMonitored) {
+    return response;
+  }
+
+  await delayNextStep(attemptsCount, maxAttempts, pollInterval);
+  return await pollingMonitorWithTokenUntilDone(
+    token,
+    isAsync,
+    options,
+    pollInterval,
+    attemptsCount,
+    maxAttempts,
+    resolutionMeta,
+    contributors,
+  );
+}

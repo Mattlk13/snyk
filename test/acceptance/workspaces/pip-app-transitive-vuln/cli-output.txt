@@ -3,7 +3,7 @@ Testing pip-app-transitive-vuln...
 
 ✗ Medium severity vulnerability found in Jinja2
   Description: Sandbox Escape
-  Info: http://localhost:12345/vuln/SNYK-PYTHON-JINJA2-174126
+  Info: https://security.snyk.io/vuln/SNYK-PYTHON-JINJA2-174126
   Introduced through: flask@0.12.2
   From: flask@0.12.2 > Jinja2@2.9.6
   Remediation:
@@ -11,7 +11,7 @@ Testing pip-app-transitive-vuln...
 
 ✗ High severity vulnerability found in flask
   Description: Improper Input Validation
-  Info: http://localhost:12345/vuln/SNYK-PYTHON-FLASK-42185
+  Info: https://security.snyk.io/vuln/SNYK-PYTHON-FLASK-42185
   Introduced through: flask@0.12.2
   From: flask@0.12.2
   Remediation:
@@ -19,7 +19,7 @@ Testing pip-app-transitive-vuln...
 
 ✗ High severity vulnerability found in flask
   Description: Denial of Service (DOS)
-  Info: http://localhost:12345/vuln/SNYK-PYTHON-FLASK-451637
+  Info: https://security.snyk.io/vuln/SNYK-PYTHON-FLASK-451637
   Introduced through: flask@0.12.2
   From: flask@0.12.2
   Remediation:
@@ -27,7 +27,7 @@ Testing pip-app-transitive-vuln...
 
 ✗ High severity vulnerability found in Werkzeug
   Description: Insufficient Randomness
-  Info: http://localhost:12345/vuln/SNYK-PYTHON-WERKZEUG-458931
+  Info: https://security.snyk.io/vuln/SNYK-PYTHON-WERKZEUG-458931
   Introduced through: flask@0.12.2
   From: flask@0.12.2 > Werkzeug@0.12.2
   Remediation:
@@ -43,3 +43,6 @@ Open source:       no
 Project path:      pip-app-transitive-vuln
 
 Tested 6 dependencies for known vulnerabilities, found 4 vulnerabilities, 4 vulnerable paths.
+
+Tip: Try `snyk fix` to address these issues.`snyk fix` is a new CLI command in that aims to automatically apply the recommended updates for supported ecosystems.
+See documentation on how to enable this beta feature: https://docs.snyk.io/snyk-cli/fix-vulnerabilities-from-the-cli/automatic-remediation-with-snyk-fix#enabling-snyk-fix

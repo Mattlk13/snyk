@@ -1,7 +1,9 @@
-const config = require('../config');
+const { default: config } = require('../config');
 const chalk = require('chalk');
 const { SEVERITIES } = require('../snyk-test/common');
+const { errorMessageWithRetry } = require('./error-with-retry');
 const analytics = require('../analytics');
+const { FormattedCustomError } = require('./formatted-custom-error');
 
 const errors = {
   connect: 'Check your network connection, failed to connect to Snyk API',
@@ -9,7 +11,7 @@ const errors = {
   auth: 'Unauthorized: please ensure you are logged in using `snyk auth`',
   oldsnyk:
     'You have an alpha format Snyk policy file in this directory. ' +
-    'Please remove it, and re-create using `snyk wizard`',
+    'Please remove it.',
   notfound: 'The package could not be found or does not exist',
   patchfail: 'Failed to apply patch against %s',
   updatefail:
@@ -19,7 +21,7 @@ const errors = {
     '\n If you see any WARN messages about permission issues you can try ' +
     'following advice on: ' +
     'https://docs.npmjs.com/getting-started/fixing-npm-permissions',
-  updatepackage: 'Upgrade this package to "%s", then run the wizard again.',
+  updatepackage: 'Upgrade this package to "%s".',
   nodeModules:
     'This directory looks like a node project, but is missing the ' +
     'contents of the node_modules directory.' +
@@ -28,9 +30,9 @@ const errors = {
   noApiToken:
     '%s requires an authenticated account. Please run `snyk auth` ' +
     'and try again.',
-  timeout:
-    'The request has timed out on the server side.\nPlease re-run ' +
-    'this command with the `-d` flag and send the output to support@snyk.io.',
+  timeout: errorMessageWithRetry(
+    'The request has timed out on the server side.',
+  ),
   policyFile:
     'Bad policy file, please use --path=PATH to specify a ' +
     'directory with a .snyk file',
@@ -51,7 +53,6 @@ const codes = {
   411: errors.endpoint, // try to post to a weird endpoint
   403: errors.endpoint,
   401: errors.auth,
-  400: errors.invalidSeverityThreshold,
   Unauthorized: errors.auth,
   MISSING_NODE_MODULES: errors.nodeModules,
   OLD_DOTFILE_FORMAT: errors.oldsnyk,
@@ -85,8 +86,12 @@ module.exports.message = function(error) {
       codes[error.code || error.message] ||
       errors[error.code || error.message];
     if (message) {
-      message = message.replace(/(%s)/g, error.message).trim();
-      message = chalk.bold.red(message);
+      if (error instanceof FormattedCustomError) {
+        message = error.formattedUserMessage;
+      } else {
+        message = message.replace(/(%s)/g, error.message).trim();
+        message = chalk.bold.red(message);
+      }
     } else if (error.code) {
       // means it's a code error
       message =

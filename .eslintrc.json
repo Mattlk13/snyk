@@ -6,14 +6,14 @@
   // },
   "env": {
     "node": true,
-    "es6": true,
-    "jest": true
+    "es6": true
   },
   "plugins": ["@typescript-eslint"],
   "extends": [
     "eslint:recommended",
     "plugin:@typescript-eslint/eslint-recommended",
     "plugin:@typescript-eslint/recommended",
+    "plugin:anti-trojan-source/recommended",
     "prettier",
     "prettier/@typescript-eslint"
   ],
@@ -32,13 +32,30 @@
     "@typescript-eslint/no-unused-vars": "error",
     "no-prototype-builtins": "off",
     "require-atomic-updates": "off",
+    "no-restricted-imports": [
+      "error",
+      { "paths": ["lodash"], "patterns": ["lodash/*"] }
+    ],
     "no-buffer-constructor": "error"
   },
   "overrides": [
     {
       "files": ["*.ts"],
       "rules": {
+        "@typescript-eslint/ban-types": "warn",
         "id-blacklist": ["error", "exports"] // in TS, use "export" instead of Node's "module.exports"
+      }
+    },
+    {
+      "files": "*.spec.*",
+      "extends": ["plugin:jest/recommended"],
+      "rules": {
+        "jest/no-done-callback": "warn",
+        "jest/valid-title": "warn",
+        "jest/no-conditional-expect": "warn",
+        "jest/no-try-expect": "warn",
+        "jest/no-identical-title": "warn",
+        "@typescript-eslint/ban-ts-comment": "warn"
       }
     }
   ]

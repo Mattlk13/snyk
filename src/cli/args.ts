@@ -1,8 +1,14 @@
 import * as abbrev from 'abbrev';
 import { MethodResult } from './commands/types';
 
-import debugModule = require('debug');
+import * as debugModule from 'debug';
 import { parseMode, displayModeHelp } from './modes';
+import {
+  SupportedCliCommands,
+  SupportedUserReachableFacingCliArgs,
+} from '../lib/types';
+import { getContainerImageSavePath } from '../lib/container';
+import { obfuscateArgs } from '../lib/utils';
 
 export declare interface Global extends NodeJS.Global {
   ignoreUnknownCA: boolean;
@@ -21,15 +27,23 @@ const alias = abbrev(
 );
 alias.d = 'debug'; // always make `-d` debug
 alias.t = 'test';
+alias.p = 'prune-repeated-subdependencies';
 
 // The -d flag enables printing the messages for predefined namespaces.
 // Additional ones can be specified (comma-separated) in the DEBUG environment variable.
 const DEBUG_DEFAULT_NAMESPACES = [
   'snyk-test',
   'snyk',
+  'snyk-code',
+  'snyk-iac',
+  'snyk:find-files',
+  'snyk:run-test',
+  'snyk:prune',
+  'snyk-nodejs-plugin',
   'snyk-gradle-plugin',
   'snyk-sbt-plugin',
   'snyk-mvn-plugin',
+  'snyk-yarn-workspaces',
 ];
 
 function dashToCamelCase(dash) {
@@ -52,7 +66,7 @@ export interface ArgsOptions {
   // (see the snyk-mvn-plugin or snyk-gradle-plugin)
   _doubleDashArgs: string[];
   _: MethodArgs;
-  [key: string]: boolean | string | MethodArgs | string[]; // The two last types are for compatibility only
+  [key: string]: boolean | string | number | MethodArgs | string[]; // The two last types are for compatibility only
 }
 
 export function args(rawArgv: string[]): Args {
@@ -110,8 +124,12 @@ export function args(rawArgv: string[]): Args {
   const cli = require('./commands');
 
   // the first argument is the command we'll execute, everything else will be
-  // an argument to our command, like `snyk help protect`
-  let command = argv._.shift() as string; // can actually be undefined
+  // an argument to our command, like `snyk test package2test`
+  let command = (argv._ as string[])[0] || '';
+  // since we are handling documentation for subcommands now, we should keep all the arguments
+  if (!argv.help) {
+    command = argv._.shift() as string; // can actually be undefined
+  }
 
   // snyk [mode?] [command] [paths?] [options-double-dash]
   command = displayModeHelp(command, argv);
@@ -127,16 +145,27 @@ export function args(rawArgv: string[]): Args {
     command = 'version';
   }
 
+  // alias `--about` to `snyk about`
+  if (argv.about) {
+    command = 'about';
+  }
+
   if (!command || argv.help || command === 'help') {
     // bit of a song and dance to support `snyk -h` and `snyk help`
     if (argv.help === true || command === 'help') {
       argv.help = 'help';
     }
-    command = 'help';
 
+    // If command has a value prior to running it over with “help” and argv.help contains "help", save the command in argv._
+    // so that no argument gets deleted or ignored. This ensures `snyk --help [command]` and `snyk [command] --help` return the
+    // specific help page instead of the generic one.
+    // This change also covers the scenario of 'snyk [mode] [command] --help' and 'snyk --help [mode] [command]`.
     if (!argv._.length) {
-      argv._.unshift((argv.help as string) || 'help');
+      command && argv.help === 'help'
+        ? argv._.unshift(command)
+        : argv._.unshift((argv.help as string) || 'help');
     }
+    command = 'help';
   }
 
   if (command && command.indexOf('config:') === 0) {
@@ -157,19 +186,22 @@ export function args(rawArgv: string[]): Args {
     argv._.push(command);
   }
 
-  // TODO decide why we can't do this cart blanche...
-  if (
-    ['protect', 'test', 'monitor', 'wizard', 'ignore', 'woof'].indexOf(
-      command,
-    ) !== -1
-  ) {
+  // TODO: Once experimental flag became default this block should be
+  // moved to inside the parseModes function for container mode
+  const imageSavePath = getContainerImageSavePath();
+  if (imageSavePath) {
+    argv['imageSavePath'] = imageSavePath;
+  }
+
+  if (command in SupportedCliCommands) {
     // copy all the options across to argv._ as an object
     argv._.push(argv);
   }
 
-  // arguments that needs transformation from dash-case to camelCase
-  // should be added here
-  for (const dashedArg of [
+  // TODO: eventually all arguments should be transformed like this.
+  const argumentsToTransform: Array<Partial<
+    SupportedUserReachableFacingCliArgs
+  >> = [
     'package-manager',
     'packages-folder',
     'severity-threshold',
@@ -181,14 +213,30 @@ export function args(rawArgv: string[]): Args {
     'scan-all-unmanaged',
     'fail-on',
     'all-projects',
+    'yarn-workspaces',
+    'maven-aggregate-project',
     'detection-depth',
-    'reachable-vulns',
-  ]) {
+    'init-script',
+    'integration-name',
+    'integration-version',
+    'prune-repeated-subdependencies',
+    'dry-run',
+    'sequential',
+    'gradle-normalize-deps',
+  ];
+  for (const dashedArg of argumentsToTransform) {
     if (argv[dashedArg]) {
       const camelCased = dashToCamelCase(dashedArg);
+      if (camelCased === dashedArg) {
+        continue;
+      }
       argv[camelCased] = argv[dashedArg];
       delete argv[dashedArg];
     }
+  }
+
+  if (argv.detectionDepth !== undefined) {
+    argv.detectionDepth = Number(argv.detectionDepth);
   }
 
   if (argv.skipUnresolved !== undefined) {
@@ -224,7 +272,7 @@ export function args(rawArgv: string[]): Args {
     global.ignoreUnknownCA = true;
   }
 
-  debug(command, argv);
+  debug(command, obfuscateArgs(argv));
 
   return {
     command,

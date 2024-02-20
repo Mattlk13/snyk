@@ -1,4 +1,7 @@
-import * as config from '../config';
+import config from '../config';
+import { color } from '../theme';
+import { DepGraphData } from '@snyk/dep-graph';
+import { jsonStringifyLargeObject } from '../json';
 
 export function assembleQueryString(options) {
   const org = options.org || config.org || null;
@@ -20,10 +23,11 @@ export function assembleQueryString(options) {
   return Object.keys(qs).length !== 0 ? qs : null;
 }
 
-enum SEVERITY {
+export enum SEVERITY {
   LOW = 'low',
   MEDIUM = 'medium',
   HIGH = 'high',
+  CRITICAL = 'critical',
 }
 export const SEVERITIES: Array<{
   verboseName: SEVERITY;
@@ -41,7 +45,20 @@ export const SEVERITIES: Array<{
     verboseName: SEVERITY.HIGH,
     value: 3,
   },
+  {
+    verboseName: SEVERITY.CRITICAL,
+    value: 4,
+  },
 ];
+
+export function colorTextBySeverity(
+  severity: string,
+  textToColor: string,
+): string {
+  return (color.severity[(severity || '').toLowerCase()] || color.severity.low)(
+    textToColor,
+  );
+}
 
 export enum FAIL_ON {
   all = 'all',
@@ -50,3 +67,19 @@ export enum FAIL_ON {
 }
 
 export type FailOn = 'all' | 'upgradable' | 'patchable';
+
+export const RETRY_ATTEMPTS = 3;
+export const RETRY_DELAY = 500;
+
+// depGraphData formats the given depGrahData with the targetName as expected by
+// the `depgraph` CLI workflow.
+export function depGraphToOutputString(
+  dg: DepGraphData,
+  targetName: string,
+): string {
+  return `DepGraph data:
+${jsonStringifyLargeObject(dg)}
+DepGraph target:
+${targetName}
+DepGraph end`;
+}
